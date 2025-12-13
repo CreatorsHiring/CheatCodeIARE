@@ -4,10 +4,12 @@ const session = require("express-session");
 const dotenv = require("dotenv");
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 const PptxGenJS = require("pptxgenjs");
+
 const { inject } = require("@vercel/analytics");
 
 dotenv.config();
 inject();
+
 
 const app = express();
 const port = 3000;
@@ -146,8 +148,6 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
             objects: [
                 // Image 2: Logo at Top Right
                 { image: { x: "85%", y: 0.05, w: 1.2, h: 0.7, path: path.join(__dirname, "assets", "image2.png") } },
-                // Institute Name (Header Text) - Changed color to Blue since background bar is gone
-                { text: { text: "INSTITUTE OF AERONAUTICAL ENGINEERING", options: { x: 0.2, y: 0.1, w: "60%", h: 0.4, fontSize: 18, color: IARE_BLUE, bold: true, align: "left" } } },
                 // Footer Bar (Blue)
                 { rect: { x: 0, y: "95%", w: "100%", h: 0.4, fill: { color: IARE_BLUE } } },
                 { slideNumber: { x: "90%", y: "96%", fontSize: 10, color: "FFFFFF" } }
@@ -157,15 +157,48 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
         // Slide 1: Title Slide
         let slide1 = pres.addSlide({ masterName: "TITLE_MASTER" });
 
-        slide1.addText("AAT PRESENTATION", { x: 0.5, y: 1.8, w: "90%", fontSize: 16, color: IARE_BLUE, bold: true, align: "center" });
-        slide1.addText(content.title.toUpperCase(), { x: 0.5, y: 2.3, w: "90%", fontSize: 32, color: "000000", bold: true, align: "center" });
+        const NEW_BLUE = "004170"; // User specific color matches AAT - TECH TALK
 
-        // Student Details
-        slide1.addText(`Topic: ${problemStatement}`, { x: 1.5, y: 3.5, w: "80%", fontSize: 16, color: TEXT_MAIN });
-        slide1.addText(`Name: ${name}`, { x: 1.5, y: 4.0, w: "80%", fontSize: 16, color: TEXT_MAIN });
-        slide1.addText(`Roll No: ${studentId}`, { x: 1.5, y: 4.5, w: "80%", fontSize: 16, color: TEXT_MAIN });
-        slide1.addText(`Branch: ${department}`, { x: 1.5, y: 5.0, w: "80%", fontSize: 16, color: TEXT_MAIN });
-        slide1.addText(`Subject: ${subject}`, { x: 1.5, y: 5.5, w: "80%", fontSize: 16, color: TEXT_MAIN });
+        // 1. AAT - TECH TALK (Center, 28px, #004170)
+        slide1.addText("AAT - TECH TALK", { x: 0.5, y: 1.8, w: "90%", fontSize: 28, color: NEW_BLUE, bold: true, align: "center", fontFace: "Arial" });
+
+        // 2. Topic - Problem Statement
+        // "Topic" (28px Arial Headings #004170)
+        // "Problem Statement" (24px)
+        // "Little left aligned" -> We use x=1.0 to offset from left.
+
+        const contentX = 1.0;
+        const contentW = "80%";
+
+        slide1.addText(
+            [
+                { text: "Topic - ", options: { fontSize: 28, color: NEW_BLUE, fontFace: "Arial", bold: true } },
+                { text: `${problemStatement}`, options: { fontSize: 24, color: NEW_BLUE } }
+            ],
+            { x: contentX, y: 2.5, w: contentW, align: "left" }
+        );
+
+        // 3. Student Details (Name, Roll No, Branch, Subject)
+        // Labels: 18px, #004170. Values: 18px (Default Black)
+        // Left aligned with Topic (x=1.0)
+
+        let startY = 3.5;
+        const details = [
+            { label: "Name", value: name },
+            { label: "Roll No", value: studentId },
+            { label: "Branch", value: department },
+            { label: "Subject", value: subject }
+        ];
+
+        details.forEach((item, i) => {
+            slide1.addText(
+                [
+                    { text: `${item.label}: `, options: { fontSize: 18, color: NEW_BLUE, bold: true } },
+                    { text: `${item.value}`, options: { fontSize: 18, color: "000000" } }
+                ],
+                { x: contentX, y: startY + (i * 0.5), w: contentW, align: "left" }
+            );
+        });
 
         // Slide 2: Index
         let slideIndex = pres.addSlide({ masterName: "CONTENT_MASTER" });
