@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - CheatCodeIARE</title>
+    <link rel="stylesheet" href="/styles/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .login-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 40px;
+            border-radius: 15px;
+            border: 2px solid #00f3ff;
+            box-shadow: 0 0 15px rgba(0, 243, 255, 0.2);
+            backdrop-filter: blur(10px);
+            max-width: 400px;
+            width: 100%;
+        }
+
+        .login-title {
+            font-family: 'Orbitron', sans-serif;
+            color: #fff;
+            text-shadow: 0 0 10px #00f3ff;
+            margin-bottom: 30px;
+            font-size: 2rem;
+        }
+
+        .input-group {
+            width: 100%;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .input-group label {
+            display: block;
+            color: #00f3ff;
+            font-family: 'Orbitron', sans-serif;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid #333;
+            border-radius: 5px;
+            color: #fff;
+            font-family: 'Poppins', sans-serif;
+            font-size: 1rem;
+            outline: none;
+            box-sizing: border-box;
+            transition: all 0.3s ease;
+        }
+
+        .input-group input:focus {
+            border-color: #ff00ff;
+            box-shadow: 0 0 10px rgba(255, 0, 255, 0.3);
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 12px;
+            background: transparent;
+            color: #00f3ff;
+            border: 2px solid #00f3ff;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: bold;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 10px;
+            text-transform: uppercase;
+        }
+
+        .login-btn:hover {
+            background: #00f3ff;
+            color: #050505;
+            box-shadow: 0 0 20px rgba(0, 243, 255, 0.8);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="content">
+        <div class="login-container">
+            <h1 class="login-title">LOGIN</h1>
+            <form action="/login" method="POST">
+                <div class="input-group">
+                    <label>Student Name</label>
+                    <input type="text" name="name" required placeholder="Enter your name">
+                </div>
+                <div class="input-group">
+                    <label>Student ID</label>
+                    <input type="text" name="studentId" required placeholder="Enter ID">
+                </div>
+                <div class="input-group">
+                    <label>Password</label>
+                    <input type="password" name="password" required placeholder="Any password">
+                </div>
+                <button type="submit" class="login-btn">ENTER SYSTEM</button>
+            </form>
+        </div>
+    </div>
+</body>
+
+</html>

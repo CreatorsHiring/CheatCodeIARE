@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CheatCodeIARE</title>
+    <link rel="stylesheet" href="styles/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+    <div class="header">
+
+        <div class="headerLeft">
+            <img src="images/favicon.svg" alt="img" class="logo">
+            <p class="title">CheatCodeIARE</p>
+        </div>
+
+        <div class="headerRight">
+            <button class="loginbtn">LOG IN</button>
+            <button class="signupbtn">SIGN UP</button>
+        </div>
+
+    </div>
+    <div class="content">
+        <div class="cards-container">
+            <div class="card neon-border">
+                <i class="fa-solid fa-file-powerpoint neon-icon"></i>
+                <h2>AAT PPT</h2>
+            </div>
+            <div class="card neon-border">
+                <i class="fa-solid fa-chart-pie neon-icon"></i>
+                <h2>Report Gen</h2>
+            </div>
+            <div class="card neon-border">
+                <i class="fa-solid fa-pen-nib neon-icon"></i>
+                <h2>Worksheet Writing</h2>
+            </div>
+        </div>
+        <p class="neon-text-bottom">“One Stop Solution for AAT'S And Worksheets full marks Guarantee”</p>
+    </div>
+
+    <script>
+        document.querySelectorAll('.card').forEach(card => {
+            card.addEventListener('click', () => {
+                window.location.href = '/ppt';
+            });
+        });
+    </script>
+
+    <footer>
+
+        <p class="f">© 2025 CheatCodeIARE. All rights reserved.</p>
+
+    </footer>
+
+</body>
+
+</html>
