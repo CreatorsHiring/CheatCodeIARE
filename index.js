@@ -4,8 +4,10 @@ const session = require("express-session");
 const dotenv = require("dotenv");
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 const PptxGenJS = require("pptxgenjs");
+const { inject } = require("@vercel/analytics");
 
 dotenv.config();
+inject();
 
 const app = express();
 const port = 3000;
