@@ -25,15 +25,15 @@
     </div>
     <div class="content">
         <div class="cards-container">
-            <div class="card neon-border">
+            <div class="card neon-border" onclick="window.location.href='/ppt'">
                 <i class="fa-solid fa-file-powerpoint neon-icon"></i>
                 <h2>AAT PPT</h2>
             </div>
-            <div class="card neon-border">
+            <div class="card neon-border" onclick="window.location.href='/report'">
                 <i class="fa-solid fa-chart-pie neon-icon"></i>
                 <h2>Report Gen</h2>
             </div>
-            <div class="card neon-border">
+            <div class="card neon-border" onclick="window.location.href='#'">
                 <i class="fa-solid fa-pen-nib neon-icon"></i>
                 <h2>Worksheet Writing</h2>
             </div>
@@ -42,11 +42,7 @@
     </div>
 
     <script>
-        document.querySelectorAll('.card').forEach(card => {
-            card.addEventListener('click', () => {
-                window.location.href = '/ppt';
-            });
-        });
+        // Cards now have inline onclick handlers for specific routes
     </script>
 
     <!-- Vercel Web Analytics -->

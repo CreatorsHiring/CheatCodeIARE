@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generate Report - CheatCodeIARE</title>
+    <link rel="stylesheet" href="/styles/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .report-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 40px;
+            border-radius: 15px;
+            border: 2px solid #ff00ff;
+            box-shadow: 0 0 15px rgba(255, 0, 255, 0.2);
+            backdrop-filter: blur(10px);
+            max-width: 800px;
+            width: 100%;
+            margin: 20px;
+        }
+
+        .report-title {
+            font-family: 'Orbitron', sans-serif;
+            color: #fff;
+            text-shadow: 0 0 10px #ff00ff;
+            margin-bottom: 30px;
+            font-size: 2rem;
+            text-align: center;
+        }
+
+        .user-info {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            width: 100%;
+            justify-content: space-between;
+        }
+
+        .info-box {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border: 1px solid #39ff14;
+            color: #39ff14;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.9rem;
+            border-radius: 5px;
+            flex: 1;
+            text-align: center;
+        }
+
+        .section-title {
+            width: 100%;
+            color: #39ff14;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.2rem;
+            margin-bottom: 15px;
+            margin-top: 10px;
+            border-bottom: 1px solid #39ff14;
+            padding-bottom: 5px;
+        }
+
+        .input-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            width: 100%;
+        }
+
+        .input-group {
+            width: 100%;
+            margin-bottom: 15px;
+        }
+
+        .input-group label {
+            display: block;
+            color: #ff00ff;
+            font-family: 'Orbitron', sans-serif;
+            margin-bottom: 8px;
+            font-size: 0.8rem;
+        }
+
+        .input-group input,
+        .input-group textarea {
+            width: 100%;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid #333;
+            border-radius: 5px;
+            color: #fff;
+            font-family: 'Poppins', sans-serif;
+            font-size: 1rem;
+            outline: none;
+            box-sizing: border-box;
+            transition: all 0.3s ease;
+        }
+
+        .input-group input:focus,
+        .input-group textarea:focus {
+            border-color: #39ff14;
+            box-shadow: 0 0 10px rgba(57, 255, 20, 0.3);
+        }
+
+        .full-width {
+            grid-column: span 2;
+        }
+
+        .generate-btn {
+            width: 100%;
+            padding: 15px;
+            background: transparent;
+            color: #39ff14;
+            border: 2px solid #39ff14;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: bold;
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 20px;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .generate-btn:hover {
+            background: #39ff14;
+            color: #050505;
+            box-shadow: 0 0 20px rgba(57, 255, 20, 0.8);
+        }
+
+        .loading {
+            display: none;
+            color: #fff;
+            margin-top: 15px;
+            font-family: 'Orbitron', sans-serif;
+            text-align: center;
+        }
+
+        @media (max-width: 600px) {
+            .input-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .full-width {
+                grid-column: span 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="content">
+        <div class="report-container">
+            <h1 class="report-title">REPORT GENERATOR</h1>
+
+            <div class="user-info">
+                <div class="info-box">Name: <%= user.name %>
+                </div>
+                <div class="info-box">ID: <%= user.studentId %>
+                </div>
+            </div>
+
+            <form id="reportForm" action="/generate-report" method="POST">
+
+                <div class="section-title">Student / Course Details</div>
+                <div class="input-grid">
+                    <div class="input-group">
+                        <label>Name</label>
+                        <input type="text" name="name" value="<%= user.name %>" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Roll No</label>
+                        <input type="text" name="rollNo" value="<%= user.studentId %>" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Program</label>
+                        <input type="text" name="program" placeholder="e.g. B.Tech" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Semester</label>
+                        <input type="text" name="semester" placeholder="e.g. VI" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Class</label>
+                        <input type="text" name="class" placeholder="e.g. CSE-A" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Regulation</label>
+                        <input type="text" name="regulation" placeholder="e.g. R18" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Course Title</label>
+                        <input type="text" name="courseTitle" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Course Code</label>
+                        <input type="text" name="courseCode" required>
+                    </div>
+                    <div class="input-group full-width">
+                        <label>AAT No</label>
+                        <input type="text" name="aatNo" placeholder="e.g. 1" required>
+                    </div>
+                </div>
+
+                <div class="section-title">Questions</div>
+                <div class="input-group">
+                    <label>Question 1</label>
+                    <textarea name="question1" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 2</label>
+                    <textarea name="question2" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 3</label>
+                    <textarea name="question3" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 4</label>
+                    <textarea name="question4" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 5</label>
+                    <textarea name="question5" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 6</label>
+                    <textarea name="question6" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 7</label>
+                    <textarea name="question7" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 8</label>
+                    <textarea name="question8" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 9</label>
+                    <textarea name="question9" rows="2" required></textarea>
+                </div>
+                <div class="input-group">
+                    <label>Question 10</label>
+                    <textarea name="question10" rows="2" required></textarea>
+                </div>
+
+                <button type="submit" class="generate-btn">
+                    <i class="fa-solid fa-file-word"></i> GENERATE REPORT
+                </button>
+                <div id="loading" class="loading">
+                    Generating Academic Report... <i class="fa-solid fa-spinner fa-spin"></i>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('reportForm').addEventListener('submit', function () {
+            document.querySelector('.generate-btn').style.display = 'none';
+            document.getElementById('loading').style.display = 'block';
+        });
+    </script>
+</body>
+
+</html>

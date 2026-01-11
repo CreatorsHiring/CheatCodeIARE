@@ -3,10 +3,12 @@
     "@fortawesome/fontawesome-free": "^7.1.0",
     "@google/generative-ai": "^0.24.1",
     "@vercel/analytics": "^1.6.1",
+    "docxtemplater": "^3.67.6",
     "dotenv": "^17.2.3",
     "ejs": "^3.1.10",
     "express": "^5.2.1",
     "express-session": "^1.18.2",
+    "pizzip": "^3.2.0",
     "pptxgenjs": "^4.0.1"
   }
 }

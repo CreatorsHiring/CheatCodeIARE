@@ -4,6 +4,9 @@ const session = require("express-session");
 const dotenv = require("dotenv");
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 const PptxGenJS = require("pptxgenjs");
+const PizZip = require("pizzip");
+const Docxtemplater = require("docxtemplater");
+const fs = require("fs");
 
 const { inject } = require("@vercel/analytics");
 
@@ -74,6 +77,264 @@ app.post("/login", (req, res) => {
 
 app.get("/ppt", isAuthenticated, (req, res) => {
     res.render("ppt", { user: req.session.user });
+});
+
+app.get("/report", isAuthenticated, (req, res) => {
+    res.render("report", { user: req.session.user });
+});
+
+const markdownToWordXML = (text) => {
+    if (!text) return "";
+
+    // 1. Escape XML special characters
+    let xml = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+
+    const lines = xml.split('\n');
+    let finalXml = "";
+    let inTable = false;
+
+    lines.forEach(line => {
+        const trimmedLine = line.trim();
+
+        if (!trimmedLine) return; // Skip empty lines
+
+        // Check for Table Start
+        if (trimmedLine.startsWith("TABLE:")) {
+            inTable = true;
+            // Start Table XML
+            // Basic table with grid borders
+            finalXml += '<w:tbl><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr>';
+            return;
+        }
+
+        if (inTable) {
+            // Check if line looks like a table row (has |)
+            if (line.includes("|")) {
+                finalXml += "<w:tr>";
+                const cells = line.split("|");
+                cells.forEach(cell => {
+                    const cellContent = cell.trim();
+                    // Each cell needs a paragraph run
+                    finalXml += `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${cellContent}</w:t></w:r></w:p></w:tc>`;
+                });
+                finalXml += "</w:tr>";
+            } else {
+                // If line does not have |, assume table ended
+                inTable = false;
+                finalXml += "</w:tbl>";
+                // Treat this line as normal text now
+                finalXml += `<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t xml:space="preserve">${line}</w:t></w:r></w:p>`;
+            }
+        } else {
+            // Normal Text Paragraph
+            // Check for bold (simple heuristic, though user said no bold, we keep it just in case or for headings)
+            // But strict rules say "No **bold**", so we just treat as plain text run.
+            // We just wrap in standard paragraph
+            finalXml += `<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t xml:space="preserve">${line}</w:t></w:r></w:p>`;
+        }
+    });
+
+    if (inTable) {
+        finalXml += "</w:tbl>"; // Close table if still open
+    }
+
+    return finalXml;
+};
+
+const batchGenerateAnswers = async (questions) => {
+    const answers = new Array(10).fill("");
+    const batchSize = 1; // Process 1 question at a time to ensure length/quality without timeout
+
+    for (let i = 0; i < questions.length; i += batchSize) {
+        const batch = questions.slice(i, i + batchSize);
+        console.log(`Processing batch ${i / batchSize + 1}...`);
+
+        const prompt = `
+        You are an AI academic content generator for a student-focused AAT report system.
+
+        The system will provide you with questions entered by the student.
+        Your task is to generate detailed, exam-ready answers suitable for direct insertion into a Word document.
+
+        Questions to answer:
+        ${batch.map((q, idx) => `Question: ${q}`).join('\n')}
+
+        ⚠️ The output will be injected into a DOCX template using a document-generation library.
+
+        🔴 CRITICAL DOCX SAFETY RULES (MANDATORY)
+
+        DO NOT output HTML, Markdown, or XML
+
+        ❌ No <b>, <ul>, <li>, <table>
+
+        ❌ No **bold**, __underline__, or Markdown tables
+
+        DO NOT include raw formatting syntax
+
+        ❌ No inline font sizes
+
+        ❌ No CSS
+
+        ❌ No special layout symbols
+
+        Output must be PLAIN TEXT ONLY, compatible with Word paragraph runs.
+
+        ✍️ FORMATTING RULES (DOCX-SAFE)
+
+        Use capitalized headings instead of formatting tags
+        Example:
+        INTRODUCTION
+
+        Separate sections using blank lines only
+
+        Use hyphen-based bullets (-) only
+
+        Maintain clean spacing between:
+
+        Headings
+
+        Paragraphs
+
+        Bullet points
+
+        📊 TABLE HANDLING (VERY IMPORTANT)
+
+        If the question requires a table:
+
+        ❌ DO NOT render a visual table
+        ✅ Instead, output table data in this structured format:
+
+        TABLE:
+        Aspect | Element A | Element B
+        Definition | ... | ...
+        Advantages | ... | ...
+        Limitations | ... | ...
+
+
+        This data will be converted into a real Word table by backend logic.
+
+        📄 CONTENT RULES
+
+        DO NOT repeat the question
+
+        Minimum length: one full page (400–600 words)
+
+        Academic tone
+
+        Clear logical flow
+
+        Suitable for AAT / university evaluation
+
+        🔠 FONT & STYLE NOTE
+
+        The content will be rendered in 12pt font by the Word document template
+
+        DO NOT mention font size in the output
+
+        ❌ STRICTLY AVOID
+
+        Emojis
+
+        Special symbols
+
+        Decorative characters
+
+        Nested lists
+
+        Overly long lines
+
+        🎯 FINAL OUTPUT INSTRUCTION
+
+        Generate ONLY the answer text, strictly following DOCX-safe rules.
+        Do not include explanations or meta comments.
+
+        Output valid JSON:
+        {
+            "answers": ["Answer String 1"]
+        }
+        `;
+
+        try {
+            const result = await model.generateContent(prompt);
+            const responseText = result.response.text()
+                .replace(/```json/g, "")
+                .replace(/```/g, "")
+                .trim();
+            const json = JSON.parse(responseText);
+
+            if (json.answers) {
+                json.answers.forEach((ans, idx) => {
+                    if (i + idx < 10) answers[i + idx] = ans;
+                });
+            }
+        } catch (err) {
+            console.error("Batch Error:", err);
+            // Fallback or retry logic could go here
+        }
+    }
+    return answers;
+};
+
+app.post("/generate-report", isAuthenticated, async (req, res) => {
+    try {
+        const formData = req.body;
+        console.log("Form Data Received:", formData);
+
+        // 1. Gather Questions
+        const questions = [];
+        for (let i = 1; i <= 10; i++) {
+            questions.push(formData[`question${i}`]);
+        }
+
+        // 2. Generate Answers (Batched)
+        const rawAnswers = await batchGenerateAnswers(questions);
+
+        // 3. Prepare Data for DOCX with XML transformation
+        const data = {
+            name: formData.name,
+            rollNo: formData.rollNo,
+            program: formData.program,
+            semester: formData.semester,
+            class: formData.class,
+            regulation: formData.regulation,
+            courseTitle: formData.courseTitle,
+            courseCode: formData.courseCode,
+            aatNo: formData.aatNo,
+        };
+
+        for (let i = 0; i < 10; i++) {
+            data[`question${i + 1}`] = questions[i];
+            // Render answer as Raw XML
+            data[`answer${i + 1}`] = markdownToWordXML(rawAnswers[i] || "AI Generation Failed.");
+        }
+
+        // 4. Load Template and Generate DOCX
+        const content = fs.readFileSync(path.join(__dirname, "assets", "ReportTemplate.docx"), "binary");
+        const zip = new PizZip(content);
+        const doc = new Docxtemplater(zip, {
+            paragraphLoop: true,
+            linebreaks: true,
+        });
+
+        doc.render(data);
+
+        const buf = doc.getZip().generate({
+            type: "nodebuffer",
+            compression: "DEFLATE",
+        });
+
+        res.setHeader("Content-Disposition", `attachment; filename="${formData.name}_Report.docx"`);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        res.send(buf);
+
+    } catch (error) {
+        console.error("Report Generation Error:", error);
+        res.status(500).send("Error generating report. " + error.message);
+    }
 });
 
 app.post("/generate-ppt", isAuthenticated, async (req, res) => {
