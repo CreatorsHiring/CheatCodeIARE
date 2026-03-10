@@ -15,9 +15,9 @@ inject();
 
 
 const app = express();
-const port = 3000;
+const port = 8080;
 
-// Middleware
+// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(session({
@@ -26,41 +26,183 @@ app.use(session({
     saveUninitialized: true
 }));
 
-// View Engine
+// ─── View Engine ─────────────────────────────────────────────────────────────
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 
-// Static Files
+// ─── Static Files ─────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, "public")));
-app.use('/fa', express.static(__dirname + '/node_modules/@fortawesome/fontawesome-free'));
+app.use('/fa', express.static(path.join(__dirname, 'node_modules/@fortawesome/fontawesome-free')));
 
-// Gemini Setup
+// ─── Gemini Setup ─────────────────────────────────────────────────────────────
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({
+
+// Model for structured PPT JSON generation
+const pptModel = genAI.getGenerativeModel({
     model: "gemini-flash-latest",
     generationConfig: { responseMimeType: "application/json" },
     safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
         { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
         { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
     ]
 });
 
-// Auth Middleware
+// Model for free-form chat responses
+const chatModel = genAI.getGenerativeModel({
+    model: "gemini-flash-latest",
+    safetySettings: [
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    ]
+});
+
+// ─── Auth Middleware ──────────────────────────────────────────────────────────
 const isAuthenticated = (req, res, next) => {
-    if (req.session.user) {
-        next();
-    } else {
-        res.redirect("/login");
-    }
+    if (req.session.user) return next();
+    res.redirect("/login");
 };
 
-// Routes
+// ─── PPT Content Generator (shared helper) ───────────────────────────────────
+async function generatePptContent(problemStatement) {
+    const prompt = `
+    You are an AI assistant generating structured PowerPoint slide content for an AAT presentation.
+    Output valid JSON for the following schema ONLY — no extra text, no markdown:
+    {
+      "title": "String",
+      "introduction": "String",
+      "index": ["String", "String", "String", "String", "String"],
+      "slides": [
+          {
+            "heading": "String",
+            "bulletPoints": ["String", "String", "String"]
+          }
+      ],
+      "conclusion": "String"
+    }
+
+    Topic: ${problemStatement}
+    Rules:
+    - Title must match the topic.
+    - Generate 5-7 index items.
+    - Generate 5-7 slides based on index.
+    - Each slide has 3-5 bullet points.
+    - Content must be academic and concise.
+    `;
+
+    const result = await pptModel.generateContent(prompt);
+    let responseText = result.response.text();
+
+    if (!responseText) throw new Error("Gemini returned an empty response.");
+
+    responseText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+    return JSON.parse(responseText);
+}
+
+// ─── PPTX File Builder (shared helper) ───────────────────────────────────────
+async function buildPptxBuffer(content, formData, user) {
+    const pres = new PptxGenJS();
+
+    const BG_COLOR       = "EDEDEE";
+    const IARE_BLUE      = "003366";
+    const TEXT_MAIN      = "000000";
+    const NEW_BLUE       = "004170";
+    const THANK_YOU_COLOR = "51237F";
+
+    pres.layout = "LAYOUT_16x9";
+
+    pres.defineSlideMaster({
+        title: "TITLE_MASTER",
+        background: { color: BG_COLOR },
+        objects: [
+            { image: { x: 0, y: 0, w: "100%", h: 1.5, path: path.join(__dirname, "assets", "image1.png") } }
+        ]
+    });
+
+    pres.defineSlideMaster({
+        title: "CONTENT_MASTER",
+        background: { color: BG_COLOR },
+        objects: [
+            { image: { x: "85%", y: 0.05, w: 1.2, h: 0.7, path: path.join(__dirname, "assets", "image2.png") } },
+            { rect: { x: 0, y: "95%", w: "100%", h: 0.4, fill: { color: IARE_BLUE } } },
+            { slideNumber: { x: "90%", y: "96%", fontSize: 10, color: "FFFFFF" } }
+        ]
+    });
+
+    // Title Slide
+    const slide1 = pres.addSlide({ masterName: "TITLE_MASTER" });
+    slide1.addText("AAT - TECH TALK", { x: 0.5, y: 1.8, w: "90%", fontSize: 28, color: NEW_BLUE, bold: true, align: "center", fontFace: "Arial" });
+    slide1.addText(
+        [
+            { text: "Topic - ", options: { fontSize: 28, color: NEW_BLUE, fontFace: "Arial", bold: true } },
+            { text: formData.problemStatement, options: { fontSize: 24, color: NEW_BLUE } }
+        ],
+        { x: 1.0, y: 2.5, w: "80%", align: "left" }
+    );
+    const details = [
+        { label: "Name",    value: user.name },
+        { label: "Roll No", value: user.studentId },
+        { label: "Branch",  value: formData.department },
+        { label: "Subject", value: formData.subject }
+    ];
+    details.forEach((item, i) => {
+        slide1.addText(
+            [
+                { text: `${item.label}: `, options: { fontSize: 18, color: NEW_BLUE, bold: true } },
+                { text: `${item.value}`,   options: { fontSize: 18, color: "000000" } }
+            ],
+            { x: 1.0, y: 3.5 + (i * 0.5), w: "80%", align: "left" }
+        );
+    });
+
+    // Index Slide
+    const slideIndex = pres.addSlide({ masterName: "CONTENT_MASTER" });
+    slideIndex.addText("INDEX", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
+    content.index.forEach((item, idx) => {
+        slideIndex.addText(`${idx + 1}. ${item}`, { x: 1, y: 2.0 + (idx * 0.5), w: "80%", fontSize: 18, color: TEXT_MAIN });
+    });
+
+    // Introduction Slide
+    const slideIntro = pres.addSlide({ masterName: "CONTENT_MASTER" });
+    slideIntro.addText("INTRODUCTION", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
+    slideIntro.addText(content.introduction, { x: 0.5, y: 2.0, w: "90%", fontSize: 18, color: TEXT_MAIN });
+
+    // Content Slides
+    content.slides.forEach(slideData => {
+        const s = pres.addSlide({ masterName: "CONTENT_MASTER" });
+        s.addText(slideData.heading.toUpperCase(), { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
+        const bulletItems = slideData.bulletPoints.map(bp => ({
+            text: bp,
+            options: { bullet: true, fontSize: 18, color: TEXT_MAIN }
+        }));
+        s.addText(bulletItems, { x: 0.5, y: 2.0, w: "90%", h: "60%" });
+    });
+
+    // Conclusion Slide
+    const slideConc = pres.addSlide({ masterName: "CONTENT_MASTER" });
+    slideConc.addText("CONCLUSION", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
+    slideConc.addText(content.conclusion, { x: 0.5, y: 2.0, w: "90%", fontSize: 18, color: TEXT_MAIN });
+
+    // Thank You Slide
+    const slideLast = pres.addSlide({ masterName: "TITLE_MASTER" });
+    slideLast.addText("THANK YOU", { x: 0.5, y: 1.5, w: "90%", h: "50%", fontSize: 48, color: THANK_YOU_COLOR, bold: true, align: "center", valign: "middle" });
+
+    return pres.write("nodebuffer");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ROUTES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── Home ─────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 app.get("/login", (req, res) => {
     res.render("login");
 });
@@ -75,18 +217,194 @@ app.post("/login", (req, res) => {
     }
 });
 
+// ─── PPT Form Page ────────────────────────────────────────────────────────────
 app.get("/ppt", isAuthenticated, (req, res) => {
     res.render("ppt", { user: req.session.user });
 });
 
+// ─── Generate PPT → Store in session → Redirect to /edit ─────────────────────
+app.post("/generate-ppt", isAuthenticated, async (req, res) => {
+    try {
+        const { department, subject, problemStatement } = req.body;
+
+        const content = await generatePptContent(problemStatement);
+
+        // Store everything in session so /edit and /download-ppt can use it
+        req.session.pptData = {
+            department,
+            subject,
+            problemStatement,
+            content
+        };
+
+        res.redirect("/edit");
+
+    } catch (error) {
+        console.error("PPT Generation Error:", error);
+        res.status(500).send("Error generating PPT content. " + error.message);
+    }
+});
+
+// ─── Edit Page ────────────────────────────────────────────────────────────────
+app.get("/edit", isAuthenticated, (req, res) => {
+    const pptData = req.session.pptData;
+
+    if (!pptData) {
+        // Nothing generated yet — send back to form
+        return res.redirect("/ppt");
+    }
+
+    res.render("edit", {
+        user: req.session.user,
+        pptData: pptData
+    });
+});
+
+// ─── Chatbot: General Q&A ─────────────────────────────────────────────────────
+// Called by the chat sidebar with a free-form user message.
+// It sends back a plain text reply — no PPT modification.
+app.post("/api/chat", isAuthenticated, async (req, res) => {
+    try {
+        const { message, history } = req.body;
+
+        if (!message || !message.trim()) {
+            return res.status(400).json({ success: false, reply: "Empty message." });
+        }
+
+        const pptData = req.session.pptData;
+
+        // Build a system-style preamble so the bot is aware of the presentation context
+        const systemContext = pptData
+            ? `You are a helpful AI assistant integrated into a PPT editor app called CheatCodeIARE.
+The user has generated a presentation titled "${pptData.content?.title || pptData.problemStatement}".
+Answer their questions helpfully and concisely. 
+If they want to MODIFY slides, tell them to use the "Edit Slides" prompt box for that.`
+            : `You are a helpful AI assistant integrated into a PPT editor app called CheatCodeIARE.
+Answer the user's questions helpfully and concisely.`;
+
+        // Build conversation history for multi-turn context
+        const turns = [];
+        if (history && Array.isArray(history)) {
+            history.forEach(h => {
+                turns.push({ role: h.role, parts: [{ text: h.text }] });
+            });
+        }
+
+        const chat = chatModel.startChat({
+            history: turns,
+            systemInstruction: systemContext
+        });
+
+        const result = await chat.sendMessage(message);
+        const reply = result.response.text();
+
+        res.json({ success: true, reply });
+
+    } catch (error) {
+        console.error("Chat API Error:", error);
+        res.status(500).json({ success: false, reply: "Sorry, I ran into a server error. Please try again." });
+    }
+});
+
+// ─── Edit PPT via AI: Modify the slide content stored in session ───────────────
+// Called when the user wants to change slides via a natural language prompt.
+app.post("/api/edit-ppt", isAuthenticated, async (req, res) => {
+    try {
+        const { prompt } = req.body;
+
+        if (!prompt || !prompt.trim()) {
+            return res.status(400).json({ success: false, error: "Empty prompt." });
+        }
+
+        const pptData = req.session.pptData;
+        if (!pptData) {
+            return res.status(400).json({ success: false, error: "No active presentation found. Please generate one first." });
+        }
+
+        const editPrompt = `
+You are an AI that edits PowerPoint presentation content based on user instructions.
+
+Current presentation JSON:
+${JSON.stringify(pptData.content, null, 2)}
+
+User instruction: "${prompt}"
+
+Apply the requested changes and return the COMPLETE updated JSON using the EXACT same schema:
+{
+  "title": "String",
+  "introduction": "String",
+  "index": ["String", ...],
+  "slides": [{ "heading": "String", "bulletPoints": ["String", ...] }, ...],
+  "conclusion": "String"
+}
+
+Rules:
+- Return ONLY valid JSON, no markdown, no extra text.
+- Keep all fields present even if not changed.
+- Do not add or remove the top-level keys.
+        `;
+
+        const result = await pptModel.generateContent(editPrompt);
+        let responseText = result.response.text();
+
+        if (!responseText) throw new Error("Gemini returned empty response.");
+
+        responseText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+        const updatedContent = JSON.parse(responseText);
+
+        // Persist changes back into the session
+        req.session.pptData.content = updatedContent;
+
+        res.json({ success: true, content: updatedContent });
+
+    } catch (error) {
+        console.error("Edit PPT API Error:", error);
+        res.status(500).json({ success: false, error: "Failed to update presentation: " + error.message });
+    }
+});
+
+// ─── Download PPT ─────────────────────────────────────────────────────────────
+// Builds and streams the PPTX file from whatever is currently in the session.
+app.post("/download-ppt", isAuthenticated, async (req, res) => {
+    try {
+        const pptData = req.session.pptData;
+
+        if (!pptData) {
+            return res.status(400).send("No presentation data found. Please generate a PPT first.");
+        }
+
+        const buffer = await buildPptxBuffer(
+            pptData.content,
+            {
+                department:       pptData.department,
+                subject:          pptData.subject,
+                problemStatement: pptData.problemStatement
+            },
+            req.session.user
+        );
+
+        const safeFilename = `${req.session.user.name.replace(/\s+/g, '_')}_AAT.pptx`;
+
+        res.setHeader("Content-Disposition", `attachment; filename="${safeFilename}"`);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        res.send(buffer);
+
+    } catch (error) {
+        console.error("Download PPT Error:", error);
+        res.status(500).send("Error building PPTX file. " + error.message);
+    }
+});
+
+// ─── Report Page ──────────────────────────────────────────────────────────────
 app.get("/report", isAuthenticated, (req, res) => {
     res.render("report", { user: req.session.user });
 });
 
+// ─── (Keep existing report generation logic below) ────────────────────────────
+
 const markdownToWordXML = (text) => {
     if (!text) return "";
 
-    // 1. Escape XML special characters
     let xml = text
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
@@ -100,194 +418,127 @@ const markdownToWordXML = (text) => {
 
     lines.forEach(line => {
         const trimmedLine = line.trim();
+        if (!trimmedLine) return;
 
-        if (!trimmedLine) return; // Skip empty lines
-
-        // Check for Table Start
         if (trimmedLine.startsWith("TABLE:")) {
             inTable = true;
-            // Start Table XML
-            // Basic table with grid borders
             finalXml += '<w:tbl><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr>';
             return;
         }
 
         if (inTable) {
-            // Check if line looks like a table row (has |)
             if (line.includes("|")) {
                 finalXml += "<w:tr>";
                 const cells = line.split("|");
                 cells.forEach(cell => {
                     const cellContent = cell.trim();
-                    // Each cell needs a paragraph run
                     finalXml += `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${cellContent}</w:t></w:r></w:p></w:tc>`;
                 });
                 finalXml += "</w:tr>";
             } else {
-                // If line does not have |, assume table ended
                 inTable = false;
                 finalXml += "</w:tbl>";
-                // Treat this line as normal text now
                 finalXml += `<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t xml:space="preserve">${line}</w:t></w:r></w:p>`;
             }
         } else {
-            // Normal Text Paragraph
-            // Check for bold (simple heuristic, though user said no bold, we keep it just in case or for headings)
-            // But strict rules say "No **bold**", so we just treat as plain text run.
-            // We just wrap in standard paragraph
             finalXml += `<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t xml:space="preserve">${line}</w:t></w:r></w:p>`;
         }
     });
 
-    if (inTable) {
-        finalXml += "</w:tbl>"; // Close table if still open
-    }
+    if (inTable) finalXml += "</w:tbl>";
 
     return finalXml;
 };
 
 const batchGenerateAnswers = async (questions) => {
     const answers = new Array(10).fill("");
-    const batchSize = 1; // Process 1 question at a time to ensure length/quality without timeout
 
-    for (let i = 0; i < questions.length; i += batchSize) {
-        const batch = questions.slice(i, i + batchSize);
-        console.log(`Processing batch ${i / batchSize + 1}...`);
+    // No JSON mime type — large JSON responses get truncated in strict JSON mode
+    const reportModel = genAI.getGenerativeModel({
+        model: "gemini-flash-latest",
+        safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ]
+    });
+
+    // Helper: send one batch of questions and fill answers array
+    const processBatch = async (batch, batchNum) => {
+        const numberedQuestions = batch
+            .map(({ q }, idx) => `Q${idx + 1}: ${q}`)
+            .join("\n\n");
 
         const prompt = `
-        You are an AI academic content generator for a student-focused AAT report system.
+You are an AI academic content generator for a student-focused AAT report system.
+Generate detailed, exam-ready answers for ALL questions below.
 
-        The system will provide you with questions entered by the student.
-        Your task is to generate detailed, exam-ready answers suitable for direct insertion into a Word document.
+⚠️ Output must be PLAIN TEXT ONLY — no HTML, no Markdown, no XML tags.
+Use CAPITALIZED HEADINGS and hyphen bullets (-) only.
+For tables use:
+TABLE:
+Col A | Col B
+Row1A | Row1B
 
-        Questions to answer:
-        ${batch.map((q, idx) => `Question: ${q}`).join('\n')}
+Return ONLY a raw JSON array — no markdown fences, no extra text:
+[
+  { "index": 0, "answer": "answer for Q1 here" },
+  { "index": 1, "answer": "answer for Q2 here" }
+]
 
-        ⚠️ The output will be injected into a DOCX template using a document-generation library.
+Each answer must be detailed and exam-ready (around 100-120 words).
+The "index" must start at 0 and match the question order.
 
-        🔴 CRITICAL DOCX SAFETY RULES (MANDATORY)
-
-        DO NOT output HTML, Markdown, or XML
-
-        ❌ No <b>, <ul>, <li>, <table>
-
-        ❌ No **bold**, __underline__, or Markdown tables
-
-        DO NOT include raw formatting syntax
-
-        ❌ No inline font sizes
-
-        ❌ No CSS
-
-        ❌ No special layout symbols
-
-        Output must be PLAIN TEXT ONLY, compatible with Word paragraph runs.
-
-        ✍️ FORMATTING RULES (DOCX-SAFE)
-
-        Use capitalized headings instead of formatting tags
-        Example:
-        INTRODUCTION
-
-        Separate sections using blank lines only
-
-        Use hyphen-based bullets (-) only
-
-        Maintain clean spacing between:
-
-        Headings
-
-        Paragraphs
-
-        Bullet points
-
-        📊 TABLE HANDLING (VERY IMPORTANT)
-
-        If the question requires a table:
-
-        ❌ DO NOT render a visual table
-        ✅ Instead, output table data in this structured format:
-
-        TABLE:
-        Aspect | Element A | Element B
-        Definition | ... | ...
-        Advantages | ... | ...
-        Limitations | ... | ...
-
-
-        This data will be converted into a real Word table by backend logic.
-
-        📄 CONTENT RULES
-
-        DO NOT repeat the question
-
-        Minimum length: one full page (400–600 words)
-
-        Academic tone
-
-        Clear logical flow
-
-        Suitable for AAT / university evaluation
-
-        🔠 FONT & STYLE NOTE
-
-        The content will be rendered in 12pt font by the Word document template
-
-        DO NOT mention font size in the output
-
-        ❌ STRICTLY AVOID
-
-        Emojis
-
-        Special symbols
-
-        Decorative characters
-
-        Nested lists
-
-        Overly long lines
-
-        🎯 FINAL OUTPUT INSTRUCTION
-
-        Generate ONLY the answer text, strictly following DOCX-safe rules.
-        Do not include explanations or meta comments.
-
-        Output valid JSON:
-        {
-            "answers": ["Answer String 1"]
-        }
+QUESTIONS:
+${numberedQuestions}
         `;
 
         try {
-            const result = await model.generateContent(prompt);
-            const responseText = result.response.text()
+            console.log(`Processing batch ${batchNum} (${batch.length} questions)...`);
+            const result = await reportModel.generateContent(prompt);
+            let text = result.response.text()
                 .replace(/```json/g, "")
                 .replace(/```/g, "")
                 .trim();
-            const json = JSON.parse(responseText);
 
-            if (json.answers) {
-                json.answers.forEach((ans, idx) => {
-                    if (i + idx < 10) answers[i + idx] = ans;
-                });
-            }
-        } catch (err) {
-            console.error("Batch Error:", err);
-            // Fallback or retry logic could go here
+            const parsed = JSON.parse(text);
+            parsed.forEach((item, idx) => {
+                const originalIndex = batch[idx]?.i;
+                if (originalIndex !== undefined && item.answer) {
+                    answers[originalIndex] = item.answer;
+                }
+            });
+        } catch (e) {
+            console.error(`Batch ${batchNum} error:`, e.message);
+            batch.forEach(({ i }) => { answers[i] = "AI Generation Failed."; });
         }
-    }
+    };
+
+    // Filter out blank questions keeping original indices
+    const nonEmpty = questions
+        .map((q, i) => ({ q, i }))
+        .filter(({ q }) => q && q.trim());
+
+    if (nonEmpty.length === 0) return answers;
+
+    // Split into 2 batches of 5 — avoids response truncation, still only 2 API calls
+    const mid = Math.ceil(nonEmpty.length / 2);
+    const batch1 = nonEmpty.slice(0, mid);
+    const batch2 = nonEmpty.slice(mid);
+
+    await processBatch(batch1, 1);
+    if (batch2.length > 0) await processBatch(batch2, 2);
+
     return answers;
 };
 
 app.post("/generate-report", isAuthenticated, async (req, res) => {
     try {
         const formData = req.body;
-        console.log("Form Data Received:", formData);
-
-        // 1. Gather Questions
         const questions = [];
         for (let i = 1; i <= 10; i++) {
-            questions.push(formData[`question${i}`]);
+            questions.push(formData[`question${i}`] || "");
         }
 
         // 2. Generate Answers (Batched)
@@ -337,177 +588,7 @@ app.post("/generate-report", isAuthenticated, async (req, res) => {
     }
 });
 
-app.post("/generate-ppt", isAuthenticated, async (req, res) => {
-    try {
-        const { department, subject, problemStatement } = req.body;
-        const { name, studentId } = req.session.user;
-
-        // 1. Generate Content with Gemini
-        const prompt = `
-        You are an AI assistant generating structured PowerPoint slide content for an AAT presentation.
-        Output valid JSON for the following schema:
-        {
-          "title": "String",
-          "introduction": "String",
-          "index": ["String", "String", "String", "String", "String"],
-          "slides": [
-              {
-                "heading": "String",
-                "bulletPoints": ["String", "String", "String"]
-              }
-          ],
-          "conclusion": "String"
-        }
-        
-        Topic: ${problemStatement}
-        Rules:
-        - Title must match the topic.
-        - Generate 5-7 index items.
-        - Generate 5-7 slides based on index.
-        - Each slide has 3-5 bullet points.
-        - Content must be academic and concise.
-        `;
-
-        const result = await model.generateContent(prompt);
-        let responseText = result.response.text();
-        console.log("Gemini Raw Response:", responseText); // Debug logging
-
-        if (!responseText) {
-            throw new Error("Gemini returned empty response. Likely safety block or model error.");
-        }
-
-        // Clean up potential markdown if JSON mode misses it (rare but possible)
-        responseText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
-
-        const content = JSON.parse(responseText);
-
-        // 2. Generate PPT with PptxGenJS
-        let pres = new PptxGenJS();
-
-        // Theme Colors
-        const BG_COLOR = "EDEDEE"; // Light Gray Background
-        const IARE_BLUE = "003366";
-        const TEXT_MAIN = "000000";
-        const THANK_YOU_COLOR = "51237F";
-
-        pres.layout = "LAYOUT_16x9";
-
-        // MASTER 1: Title Slide & Thank You Slide (Image 1 at Top)
-        pres.defineSlideMaster({
-            title: "TITLE_MASTER",
-            background: { color: BG_COLOR },
-            objects: [
-                // Image 1: Main Header/Banner at the top
-                { image: { x: 0, y: 0, w: "100%", h: 1.5, path: path.join(__dirname, "assets", "image1.png") } }
-            ]
-        });
-
-        // MASTER 2: Content Slides (Image 2 at Top Right)
-        pres.defineSlideMaster({
-            title: "CONTENT_MASTER",
-            background: { color: BG_COLOR },
-            objects: [
-                // Image 2: Logo at Top Right
-                { image: { x: "85%", y: 0.05, w: 1.2, h: 0.7, path: path.join(__dirname, "assets", "image2.png") } },
-                // Footer Bar (Blue)
-                { rect: { x: 0, y: "95%", w: "100%", h: 0.4, fill: { color: IARE_BLUE } } },
-                { slideNumber: { x: "90%", y: "96%", fontSize: 10, color: "FFFFFF" } }
-            ]
-        });
-
-        // Slide 1: Title Slide
-        let slide1 = pres.addSlide({ masterName: "TITLE_MASTER" });
-
-        const NEW_BLUE = "004170"; // User specific color matches AAT - TECH TALK
-
-        // 1. AAT - TECH TALK (Center, 28px, #004170)
-        slide1.addText("AAT - TECH TALK", { x: 0.5, y: 1.8, w: "90%", fontSize: 28, color: NEW_BLUE, bold: true, align: "center", fontFace: "Arial" });
-
-        // 2. Topic - Problem Statement
-        // "Topic" (28px Arial Headings #004170)
-        // "Problem Statement" (24px)
-        // "Little left aligned" -> We use x=1.0 to offset from left.
-
-        const contentX = 1.0;
-        const contentW = "80%";
-
-        slide1.addText(
-            [
-                { text: "Topic - ", options: { fontSize: 28, color: NEW_BLUE, fontFace: "Arial", bold: true } },
-                { text: `${problemStatement}`, options: { fontSize: 24, color: NEW_BLUE } }
-            ],
-            { x: contentX, y: 2.5, w: contentW, align: "left" }
-        );
-
-        // 3. Student Details (Name, Roll No, Branch, Subject)
-        // Labels: 18px, #004170. Values: 18px (Default Black)
-        // Left aligned with Topic (x=1.0)
-
-        let startY = 3.5;
-        const details = [
-            { label: "Name", value: name },
-            { label: "Roll No", value: studentId },
-            { label: "Branch", value: department },
-            { label: "Subject", value: subject }
-        ];
-
-        details.forEach((item, i) => {
-            slide1.addText(
-                [
-                    { text: `${item.label}: `, options: { fontSize: 18, color: NEW_BLUE, bold: true } },
-                    { text: `${item.value}`, options: { fontSize: 18, color: "000000" } }
-                ],
-                { x: contentX, y: startY + (i * 0.5), w: contentW, align: "left" }
-            );
-        });
-
-        // Slide 2: Index
-        let slideIndex = pres.addSlide({ masterName: "CONTENT_MASTER" });
-        slideIndex.addText("INDEX", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
-
-        content.index.forEach((item, idx) => {
-            slideIndex.addText(`${idx + 1}. ${item}`, { x: 1, y: 2.0 + (idx * 0.5), w: "80%", fontSize: 18, color: TEXT_MAIN });
-        });
-
-        // Slide 3: Introduction
-        let slideIntro = pres.addSlide({ masterName: "CONTENT_MASTER" });
-        slideIntro.addText("INTRODUCTION", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
-        slideIntro.addText(content.introduction, { x: 0.5, y: 2.0, w: "90%", fontSize: 18, color: TEXT_MAIN });
-
-        // Content Slides
-        content.slides.forEach(slideData => {
-            let s = pres.addSlide({ masterName: "CONTENT_MASTER" });
-            s.addText(slideData.heading.toUpperCase(), { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
-
-            let bulletItems = slideData.bulletPoints.map(bp => {
-                return { text: bp, options: { bullet: true, fontSize: 18, color: TEXT_MAIN } };
-            });
-
-            s.addText(bulletItems, { x: 0.5, y: 2.0, w: "90%", h: "60%" });
-        });
-
-        // Conclusion Content Slide (Standard Content Master)
-        let slideConc = pres.addSlide({ masterName: "CONTENT_MASTER" });
-        slideConc.addText("CONCLUSION", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
-        slideConc.addText(content.conclusion, { x: 0.5, y: 2.0, w: "90%", fontSize: 18, color: TEXT_MAIN });
-
-        // Final Slide: Thank You (Uses TITLE_MASTER for image1 at top)
-        let slideLast = pres.addSlide({ masterName: "TITLE_MASTER" });
-        slideLast.addText("THANK YOU", { x: 0.5, y: 1.5, w: "90%", h: "50%", fontSize: 48, color: THANK_YOU_COLOR, bold: true, align: "center", valign: "middle" });
-
-        // Generate and stream response
-        const buffer = await pres.write("nodebuffer");
-
-        res.setHeader("Content-Disposition", `attachment; filename="${name}_AAT.pptx"`);
-        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
-        res.send(buffer);
-
-    } catch (error) {
-        console.error(error);
-        res.status(500).send("Error generating PPT. Please check server logs.");
-    }
-});
-
+// ─── Start Server ─────────────────────────────────────────────────────────────
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
 });
