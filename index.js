@@ -21,7 +21,7 @@ const port = 8080;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(session({
-    secret: "cheatcodeiare_secret_key",
+    secret: process.env.SESSION_SECRET || "cheatcodeiare_secret_key",
     resave: false,
     saveUninitialized: true
 }));
@@ -37,63 +37,133 @@ app.use('/fa', express.static(path.join(__dirname, 'node_modules/@fortawesome/fo
 // ─── Gemini Setup ─────────────────────────────────────────────────────────────
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Model for structured PPT JSON generation
-const pptModel = genAI.getGenerativeModel({
-    model: "gemini-flash-latest",
-    generationConfig: { responseMimeType: "application/json" },
-    safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    ]
-});
+// Fallback chain — tried in order when a model fails (429, 503, quota errors).
+// Best/newest first, most stable last.
+const MODEL_FALLBACK_CHAIN = [
+    "gemini-2.5-flash",       // latest 2.5 flash (stable alias)
+    "gemini-2.5-pro",         // latest 2.5 pro (stable alias)
+    "gemini-2.0-flash",       // solid 2.0 flash
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+    "gemini-1.5-flash",       // very stable fallback
+    "gemini-1.5-pro",         // older pro, widely available
+];
 
-// Model for free-form chat responses
-const chatModel = genAI.getGenerativeModel({
-    model: "gemini-flash-latest",
-    safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    ]
-});
+const SAFETY_SETTINGS = [
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
+
+// Returns true for errors that warrant trying the next model
+function isRetryableError(err) {
+    const msg = (err.message || "").toLowerCase();
+    return (
+        msg.includes("429") ||
+        msg.includes("503") ||
+        msg.includes("404") ||
+        msg.includes("not found") ||
+        msg.includes("quota") ||
+        msg.includes("rate limit") ||
+        msg.includes("overloaded") ||
+        msg.includes("too many requests")
+    );
+}
+
+/**
+ * generateWithFallback(promptFn, useJsonMode)
+ *
+ * Tries each model in MODEL_FALLBACK_CHAIN in order.
+ * promptFn(model) — receives the constructed model, must return a Promise.
+ * useJsonMode — if true, adds responseMimeType: "application/json"
+ *
+ * Example:
+ *   const result = await generateWithFallback(m => m.generateContent(prompt), true);
+ */
+async function generateWithFallback(promptFn, useJsonMode = false) {
+    let lastError;
+    for (const modelName of MODEL_FALLBACK_CHAIN) {
+        try {
+            const model = genAI.getGenerativeModel({
+                model: modelName,
+                generationConfig: useJsonMode ? { responseMimeType: "application/json" } : {},
+                safetySettings: SAFETY_SETTINGS,
+            });
+            console.log(`[Gemini] Trying: ${modelName}`);
+            const result = await promptFn(model);
+            console.log(`[Gemini] Success: ${modelName}`);
+            return result;
+        } catch (err) {
+            lastError = err;
+            if (isRetryableError(err)) {
+                console.warn(`[Gemini] ${modelName} failed (${(err.message || "").slice(0, 80)}). Trying next model...`);
+                continue;
+            }
+            throw err; // non-retryable — don't waste time on other models
+        }
+    }
+    throw new Error(`All Gemini models exhausted. Last error: ${lastError?.message}`);
+}
 
 // ─── Auth Middleware ──────────────────────────────────────────────────────────
 const isAuthenticated = (req, res, next) => {
     if (req.session.user) return next();
+    // Store the intended destination before redirecting to login
+    req.session.returnTo = req.originalUrl;
     res.redirect("/login");
 };
 
 // ─── PPT Content Generator (shared helper) ───────────────────────────────────
 async function generatePptContent(problemStatement) {
     const prompt = `
-    You are an AI assistant generating structured PowerPoint slide content for an AAT presentation.
-    Output valid JSON for the following schema ONLY — no extra text, no markdown:
-    {
-      "title": "String",
-      "introduction": "String",
-      "index": ["String", "String", "String", "String", "String"],
-      "slides": [
-          {
-            "heading": "String",
-            "bulletPoints": ["String", "String", "String"]
-          }
-      ],
-      "conclusion": "String"
-    }
+    You are an expert academic assistant helping a university student prepare a high-quality AAT (Alternative Assessment Tool) PowerPoint presentation.
+
+    Your task is to generate detailed, well-structured slide content for the following topic.
 
     Topic: ${problemStatement}
+
+    Output STRICT JSON only — no markdown, no code fences, no extra text before or after the JSON.
+
+    JSON schema:
+    {
+      "title": "A clear, professional title that matches the topic exactly",
+      "introduction": "A detailed 4-6 sentence introduction covering: what the topic is, why it matters, its real-world relevance, and what the presentation will cover.",
+      "index": [
+        "Topic 1 name",
+        "Topic 2 name",
+        "Topic 3 name",
+        "Topic 4 name",
+        "Topic 5 name",
+        "Topic 6 name",
+        "Topic 7 name"
+      ],
+      "slides": [
+        {
+          "heading": "Slide heading matching the index item",
+          "bulletPoints": [
+            "First detailed point — explain the concept clearly in one complete sentence.",
+            "Second point — include specific technical details, examples, or data where relevant.",
+            "Third point — elaborate on applications, advantages, or how it works.",
+            "Fourth point — cover challenges, limitations, or comparisons.",
+            "Fifth point — real-world use case or industry relevance."
+          ]
+        }
+      ],
+      "conclusion": "A strong 4-5 sentence conclusion that summarises the key takeaways, the significance of the topic, what was learned, and future scope or recommendations."
+    }
+
     Rules:
-    - Title must match the topic.
-    - Generate 5-7 index items.
-    - Generate 5-7 slides based on index.
-    - Each slide has 3-5 bullet points.
-    - Content must be academic and concise.
+    - Generate exactly 7 index items and exactly 7 corresponding slides in the same order.
+    - Each slide must have exactly 4-5 bullet points.
+    - Every bullet point must be a complete, detailed sentence — not a fragment or keyword.
+    - Do NOT use LaTeX. Write formulas in plain text (e.g., E = mc^2).
+    - Tone must be academic, technical, and formal — suitable for a university-level AAT.
+    - Do NOT include filler phrases like "In conclusion" or "As we can see".
+    - Do NOT repeat the same information across slides.
     `;
 
-    const result = await pptModel.generateContent(prompt);
+    const result = await generateWithFallback(m => m.generateContent(prompt), true);
     let responseText = result.response.text();
 
     if (!responseText) throw new Error("Gemini returned an empty response.");
@@ -211,9 +281,28 @@ app.post("/login", (req, res) => {
     const { name, studentId } = req.body;
     if (name && studentId) {
         req.session.user = { name, studentId };
-        res.redirect("/ppt");
+        // Redirect to the intended destination or default to homepage
+        const returnTo = req.session.returnTo || "/";
+        req.session.returnTo = null; // Clear the returnTo after using it
+        res.redirect(returnTo);
     } else {
         res.redirect("/login");
+    }
+});
+
+// ─── Signup ───────────────────────────────────────────────────────────────────
+app.get("/signup", (req, res) => {
+    res.render("signup");
+});
+
+app.post("/signup", (req, res) => {
+    const { name, studentId, email, password } = req.body;
+    if (name && studentId && email && password) {
+        // Store user info in session and redirect to homepage
+        req.session.user = { name, studentId, email };
+        res.redirect("/");
+    } else {
+        res.redirect("/signup");
     }
 });
 
@@ -286,17 +375,33 @@ Answer the user's questions helpfully and concisely.`;
         const turns = [];
         if (history && Array.isArray(history)) {
             history.forEach(h => {
-                turns.push({ role: h.role, parts: [{ text: h.text }] });
+                // Gemini SDK only accepts "user" or "model" — normalize "assistant"
+                const role = h.role === "assistant" ? "model" : h.role;
+                turns.push({ role, parts: [{ text: h.text }] });
             });
         }
 
-        const chat = chatModel.startChat({
-            history: turns,
-            systemInstruction: systemContext
-        });
-
-        const result = await chat.sendMessage(message);
-        const reply = result.response.text();
+        // Chat uses sendMessage — fallback by rebuilding chat on each model
+        let reply = "";
+        let chatSuccess = false;
+        for (const modelName of MODEL_FALLBACK_CHAIN) {
+            try {
+                const m = genAI.getGenerativeModel({ model: modelName, safetySettings: SAFETY_SETTINGS });
+                const chatSession = m.startChat({ history: turns, systemInstruction: systemContext });
+                const result = await chatSession.sendMessage(message);
+                reply = result.response.text();
+                chatSuccess = true;
+                console.log(`[Gemini] Chat success: ${modelName}`);
+                break;
+            } catch (err) {
+                if (isRetryableError(err)) {
+                    console.warn(`[Gemini] Chat ${modelName} failed. Trying next...`);
+                    continue;
+                }
+                throw err;
+            }
+        }
+        if (!chatSuccess) throw new Error("All Gemini models failed for chat.");
 
         res.json({ success: true, reply });
 
@@ -344,7 +449,7 @@ Rules:
 - Do not add or remove the top-level keys.
         `;
 
-        const result = await pptModel.generateContent(editPrompt);
+        const result = await generateWithFallback(m => m.generateContent(editPrompt), true);
         let responseText = result.response.text();
 
         if (!responseText) throw new Error("Gemini returned empty response.");
@@ -400,6 +505,11 @@ app.get("/report", isAuthenticated, (req, res) => {
     res.render("report", { user: req.session.user });
 });
 
+// ─── Worksheets Page (Coming Soon) ───────────────────────────────────────────
+app.get("/worksheets", (req, res) => {
+    res.render("worksheets");
+});
+
 // ─── (Keep existing report generation logic below) ────────────────────────────
 
 const markdownToWordXML = (text) => {
@@ -453,17 +563,6 @@ const markdownToWordXML = (text) => {
 const batchGenerateAnswers = async (questions) => {
     const answers = new Array(10).fill("");
 
-    // No JSON mime type — large JSON responses get truncated in strict JSON mode
-    const reportModel = genAI.getGenerativeModel({
-        model: "gemini-flash-latest",
-        safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        ]
-    });
-
     // Helper: send one batch of questions and fill answers array
     const processBatch = async (batch, batchNum) => {
         const numberedQuestions = batch
@@ -496,17 +595,18 @@ ${numberedQuestions}
 
         try {
             console.log(`Processing batch ${batchNum} (${batch.length} questions)...`);
-            const result = await reportModel.generateContent(prompt);
+            const result = await generateWithFallback(m => m.generateContent(prompt), false);
             let text = result.response.text()
                 .replace(/```json/g, "")
                 .replace(/```/g, "")
                 .trim();
 
             const parsed = JSON.parse(text);
-            parsed.forEach((item, idx) => {
-                const originalIndex = batch[idx]?.i;
-                if (originalIndex !== undefined && item.answer) {
-                    answers[originalIndex] = item.answer;
+            parsed.forEach((item) => {
+                // Use item.index (as returned by the model) to find the original question index
+                const batchItem = batch[item.index];
+                if (batchItem !== undefined && item.answer) {
+                    answers[batchItem.i] = item.answer;
                 }
             });
         } catch (e) {
@@ -578,7 +678,8 @@ app.post("/generate-report", isAuthenticated, async (req, res) => {
             compression: "DEFLATE",
         });
 
-        res.setHeader("Content-Disposition", `attachment; filename="${formData.name}_Report.docx"`);
+        const safeReportName = (formData.name || "Student").replace(/[^a-zA-Z0-9_\-]/g, "_");
+        res.setHeader("Content-Disposition", `attachment; filename="${safeReportName}_Report.docx"`);
         res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         res.send(buf);
 

@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coming Soon - CheatCodeIARE</title>
+    <link rel="stylesheet" href="/styles/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .coming-soon-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 60px 40px;
+            border-radius: 15px;
+            border: 3px solid #39ff14;
+            box-shadow: 0 0 20px rgba(57, 255, 20, 0.3), 0 0 40px rgba(57, 255, 20, 0.1);
+            backdrop-filter: blur(10px);
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .coming-soon-icon {
+            font-size: 5rem;
+            color: #39ff14;
+            filter: drop-shadow(0 0 15px #39ff14);
+            margin-bottom: 30px;
+            animation: pulse 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                filter: drop-shadow(0 0 15px #39ff14);
+            }
+            50% {
+                transform: scale(1.1);
+                filter: drop-shadow(0 0 25px #39ff14);
+            }
+        }
+
+        .coming-soon-title {
+            font-family: 'Orbitron', sans-serif;
+            color: #fff;
+            text-shadow: 0 0 10px #39ff14, 0 0 20px #39ff14;
+            margin-bottom: 20px;
+            font-size: 2.5rem;
+            letter-spacing: 3px;
+        }
+
+        .coming-soon-message {
+            font-family: 'Poppins', sans-serif;
+            color: #ccc;
+            font-size: 1.1rem;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+
+        .coming-soon-subtext {
+            font-family: 'Orbitron', sans-serif;
+            color: #39ff14;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 0 0 5px #39ff14;
+        }
+
+        .notify-btn {
+            margin-top: 30px;
+            padding: 15px 40px;
+            background: transparent;
+            color: #39ff14;
+            border: 2px solid #39ff14;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: bold;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(57, 255, 20, 0.2);
+        }
+
+        .notify-btn:hover {
+            background: #39ff14;
+            color: #050505;
+            box-shadow: 0 0 30px rgba(57, 255, 20, 0.8);
+            transform: translateY(-2px);
+        }
+
+        .back-home-btn {
+            margin-top: 15px;
+            padding: 10px 30px;
+            background: transparent;
+            color: #00f3ff;
+            border: 2px solid #00f3ff;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: bold;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            border-radius: 5px;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .back-home-btn:hover {
+            background: #00f3ff;
+            color: #050505;
+            box-shadow: 0 0 20px rgba(0, 243, 255, 0.8);
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Persistent Header -->
+    <div class="header">
+        <div class="headerLeft" style="cursor: pointer;" onclick="window.location.href='/'">
+            <img src="/images/CheatCodeIARE.png" alt="img" class="logo">
+            <p class="title">CheatCodeIARE</p>
+        </div>
+        <div class="headerRight">
+            <button class="signupbtn" onclick="window.location.href='/ppt'">NEW PPT</button>
+        </div>
+    </div>
+
+    <div class="content">
+        <div class="coming-soon-container">
+            <i class="fa-solid fa-rocket coming-soon-icon"></i>
+            <h1 class="coming-soon-title">COMING SOON</h1>
+            <p class="coming-soon-message">
+                We're working hard to bring you this amazing feature.<br>
+                Stay tuned for updates!
+            </p>
+            <p class="coming-soon-subtext">🚀 Launching Soon</p>
+            
+            <button class="notify-btn" onclick="window.location.href='/'">
+                <i class="fa-solid fa-bell"></i> Notify Me
+            </button>
+            
+            <a href="/" class="back-home-btn">
+                <i class="fa-solid fa-house"></i> Back to Home
+            </a>
+        </div>
+    </div>
+
+    <!-- Vercel Web Analytics -->
+    <script>
+        window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments) };
+    </script>
+    <script defer src="/_vercel/insights/script.js"></script>
+</body>
+
+</html>
