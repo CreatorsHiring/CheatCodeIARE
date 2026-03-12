@@ -154,9 +154,9 @@ async function generatePptContent(problemStatement) {
     }
 
     Rules:
-    - Generate exactly 7 index items and exactly 7 corresponding slides in the same order.
+    - Generate exactly 10 index items and exactly 10 corresponding slides in the same order.
     - Each slide must have exactly 4-5 bullet points.
-    - Every bullet point must be a complete, detailed sentence — not a fragment or keyword.
+    - Every bullet point must be a complete, detailed sentence — not a fragment or keyword The sentences must be Bullet Points.
     - Do NOT use LaTeX. Write formulas in plain text (e.g., E = mc^2).
     - Tone must be academic, technical, and formal — suitable for a university-level AAT.
     - Do NOT include filler phrases like "In conclusion" or "As we can see".
@@ -228,33 +228,77 @@ async function buildPptxBuffer(content, formData, user) {
         );
     });
 
+    // Layout constants — keeps all slides consistent and prevents overflow
+    // Slide is 10" wide x 7.5" tall (16x9). Footer bar starts at 95% ≈ 7.13"
+    // Header image is 0.7" tall. Usable content area: y=0.85" to y=6.9"
+    const HEADING_Y  = 0.82;   // heading sits just below the header image
+    const HEADING_H  = 0.55;   // fixed height for heading row
+    const CONTENT_Y  = 1.5;    // content starts here — clear gap below heading
+    const CONTENT_H  = 5.25;   // ends at ~6.75", well above the footer bar
+    const CONTENT_X  = 0.5;
+    const CONTENT_W  = 9.0;    // full usable width (slide is 10")
+
     // Index Slide
     const slideIndex = pres.addSlide({ masterName: "CONTENT_MASTER" });
-    slideIndex.addText("INDEX", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
-    content.index.forEach((item, idx) => {
-        slideIndex.addText(`${idx + 1}. ${item}`, { x: 1, y: 2.0 + (idx * 0.5), w: "80%", fontSize: 18, color: TEXT_MAIN });
+    slideIndex.addText("INDEX", {
+        x: CONTENT_X, y: HEADING_Y, w: CONTENT_W, h: HEADING_H,
+        fontSize: 22, color: IARE_BLUE, bold: true, valign: "middle"
+    });
+    const indexItems = content.index.map((item, idx) => ({
+        text: `${idx + 1}.  ${item}
+`,
+        options: { fontSize: 16, color: TEXT_MAIN, bullet: false }
+    }));
+    slideIndex.addText(indexItems, {
+        x: CONTENT_X, y: CONTENT_Y, w: CONTENT_W, h: CONTENT_H,
+        valign: "top", lineSpacingMultiple: 1.3
     });
 
     // Introduction Slide
     const slideIntro = pres.addSlide({ masterName: "CONTENT_MASTER" });
-    slideIntro.addText("INTRODUCTION", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
-    slideIntro.addText(content.introduction, { x: 0.5, y: 2.0, w: "90%", fontSize: 18, color: TEXT_MAIN });
+    slideIntro.addText("INTRODUCTION", {
+        x: CONTENT_X, y: HEADING_Y, w: CONTENT_W, h: HEADING_H,
+        fontSize: 22, color: IARE_BLUE, bold: true, valign: "middle"
+    });
+    slideIntro.addText(content.introduction, {
+        x: CONTENT_X, y: CONTENT_Y, w: CONTENT_W, h: CONTENT_H,
+        fontSize: 15, color: TEXT_MAIN, valign: "top",
+        wrap: true, lineSpacingMultiple: 1.4
+    });
 
     // Content Slides
     content.slides.forEach(slideData => {
         const s = pres.addSlide({ masterName: "CONTENT_MASTER" });
-        s.addText(slideData.heading.toUpperCase(), { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
+        s.addText(slideData.heading.toUpperCase(), {
+            x: CONTENT_X, y: HEADING_Y, w: CONTENT_W, h: HEADING_H,
+            fontSize: 22, color: IARE_BLUE, bold: true, valign: "middle"
+        });
         const bulletItems = slideData.bulletPoints.map(bp => ({
             text: bp,
-            options: { bullet: true, fontSize: 18, color: TEXT_MAIN }
+            options: {
+                bullet: { type: "bullet", characterCode: "2022" },
+                fontSize: 14,
+                color: TEXT_MAIN,
+                paraSpaceAfter: 6,
+            }
         }));
-        s.addText(bulletItems, { x: 0.5, y: 2.0, w: "90%", h: "60%" });
+        s.addText(bulletItems, {
+            x: CONTENT_X, y: CONTENT_Y, w: CONTENT_W, h: CONTENT_H,
+            valign: "top", lineSpacingMultiple: 1.3
+        });
     });
 
     // Conclusion Slide
     const slideConc = pres.addSlide({ masterName: "CONTENT_MASTER" });
-    slideConc.addText("CONCLUSION", { x: 0.5, y: 1.0, w: "90%", fontSize: 24, color: IARE_BLUE, bold: true });
-    slideConc.addText(content.conclusion, { x: 0.5, y: 2.0, w: "90%", fontSize: 18, color: TEXT_MAIN });
+    slideConc.addText("CONCLUSION", {
+        x: CONTENT_X, y: HEADING_Y, w: CONTENT_W, h: HEADING_H,
+        fontSize: 22, color: IARE_BLUE, bold: true, valign: "middle"
+    });
+    slideConc.addText(content.conclusion, {
+        x: CONTENT_X, y: CONTENT_Y, w: CONTENT_W, h: CONTENT_H,
+        fontSize: 15, color: TEXT_MAIN, valign: "top",
+        wrap: true, lineSpacingMultiple: 1.4
+    });
 
     // Thank You Slide
     const slideLast = pres.addSlide({ masterName: "TITLE_MASTER" });
