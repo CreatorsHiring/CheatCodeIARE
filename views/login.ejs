@@ -84,6 +84,26 @@
             color: #050505;
             box-shadow: 0 0 20px rgba(0, 243, 255, 0.8);
         }
+
+        .signup-link {
+            margin-top: 20px;
+            text-align: center;
+            font-family: 'Poppins', sans-serif;
+            color: #ccc;
+            font-size: 0.9rem;
+        }
+
+        .signup-link a {
+            color: #ff00ff;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .signup-link a:hover {
+            color: #00f3ff;
+            text-shadow: 0 0 5px #00f3ff;
+        }
     </style>
 </head>
 
@@ -98,14 +118,17 @@
                 </div>
                 <div class="input-group">
                     <label>Student ID</label>
-                    <input type="text" name="studentId" required placeholder="Enter ID">
+                    <input type="text" name="studentId" required placeholder="25951A0516">
                 </div>
                 <div class="input-group">
                     <label>Password</label>
-                    <input type="password" name="password" required placeholder="Any password">
+                    <input type="password" name="password" required placeholder="password">
                 </div>
                 <button type="submit" class="login-btn">ENTER SYSTEM</button>
             </form>
+            <!-- <div class="signup-link">
+                Don't have an account? <a href="/signup">Create an Account</a>
+            </div> -->
         </div>
     </div>
 

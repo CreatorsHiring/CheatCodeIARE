@@ -114,9 +114,29 @@
 
         .loading {
             display: none;
-            color: #fff;
-            margin-top: 10px;
+            color: #39ff14;
+            margin-top: 15px;
             font-family: 'Orbitron', sans-serif;
+            font-size: 1rem;
+            text-align: center;
+            text-shadow: 0 0 10px rgba(57, 255, 20, 0.5);
+        }
+
+        .loading i {
+            margin-left: 10px;
+            font-size: 1.2rem;
+            display: inline-block;
+            animation: fa-spin 2s infinite linear;
+            color: #39ff14;
+        }
+
+        @keyframes fa-spin {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
         }
     </style>
 </head>
@@ -156,9 +176,27 @@
     </div>
 
     <script>
-        document.getElementById('pptForm').addEventListener('submit', function () {
-            document.querySelector('.generate-btn').style.display = 'none';
-            document.getElementById('loading').style.display = 'block';
+        document.getElementById('pptForm').addEventListener('submit', function (e) {
+            e.preventDefault(); // Prevent immediate submission
+            const form = this;
+            const submitBtn = document.querySelector('.generate-btn');
+            const loadingDiv = document.getElementById('loading');
+            
+            console.log('Form submitted, showing loading...');
+            
+            // Hide button and show loading animation
+            submitBtn.style.visibility = 'hidden';
+            submitBtn.style.display = 'none';
+            loadingDiv.style.display = 'block';
+            loadingDiv.innerHTML = 'Generating Cybernetic Content... <i class="fa-solid fa-spinner" style="animation: fa-spin 2s infinite linear;"></i>';
+            
+            console.log('Loading displayed, will submit in 500ms...');
+            
+            // Small delay to ensure loading animation is visible
+            setTimeout(() => {
+                console.log('Submitting form now...');
+                form.submit(); // Submit the form
+            }, 500);
         });
     </script>
 

@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit PPT - CheatCodeIARE</title>
+    <link rel="stylesheet" href="/styles/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/theme/black.min.css">
+    <style>
+        /* ── Reset & Base ─────────────────────────────────────── */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background-color: #050505;
+            color: #fff;
+            font-family: 'Poppins', sans-serif;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ── Main Layout ──────────────────────────────────────── */
+        .container {
+            display: flex;
+            flex: 1;
+            width: 100vw;
+            padding-top: 70px; /* header offset */
+            overflow: hidden;
+        }
+
+        /* ── Left Panel: Chatbot ──────────────────────────────── */
+        .left-panel {
+            flex: 0 0 380px;
+            display: flex;
+            flex-direction: column;
+            background: rgba(10, 10, 10, 0.97);
+            border-right: 2px solid #00f3ff;
+            box-shadow: 2px 0 15px rgba(0, 243, 255, 0.2);
+            z-index: 10;
+        }
+
+        .chat-header {
+            padding: 15px 20px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1rem;
+            color: #00f3ff;
+            border-bottom: 1px solid #222;
+            background: #0a0a0a;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Mode tabs */
+        .chat-tabs {
+            display: flex;
+            border-bottom: 1px solid #222;
+        }
+
+        .chat-tab {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.7rem;
+            cursor: pointer;
+            color: #888;
+            background: #0d0d0d;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .chat-tab.active {
+            color: #00f3ff;
+            background: #111;
+            border-bottom: 2px solid #00f3ff;
+        }
+
+        .chat-tab:hover:not(.active) {
+            color: #aaa;
+            background: #111;
+        }
+
+        /* Messages */
+        .chat-history {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            scrollbar-width: thin;
+            scrollbar-color: #333 transparent;
+        }
+
+        .message {
+            padding: 10px 15px;
+            border-radius: 12px;
+            max-width: 88%;
+            line-height: 1.6;
+            font-size: 0.88rem;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+
+        .msg-user {
+            align-self: flex-end;
+            background: #00f3ff;
+            color: #000;
+            border-bottom-right-radius: 3px;
+            box-shadow: 0 2px 6px rgba(0, 243, 255, 0.3);
+        }
+
+        .msg-bot {
+            align-self: flex-start;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            border: 1px solid #2a2a2a;
+            border-bottom-left-radius: 3px;
+        }
+
+        .msg-bot.edit-mode {
+            border-color: #39ff14;
+        }
+
+        .msg-success {
+            color: #39ff14;
+        }
+
+        .msg-error {
+            color: #ff4444;
+        }
+
+        /* Input area */
+        .chat-input-area {
+            padding: 14px;
+            display: flex;
+            gap: 8px;
+            border-top: 1px solid #222;
+            background: #0a0a0a;
+        }
+
+        .chat-input {
+            flex: 1;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            padding: 10px 14px;
+            outline: none;
+            font-family: 'Poppins', sans-serif;
+            font-size: 0.9rem;
+            resize: none;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input:focus { border-color: #00f3ff; }
+        .chat-input.edit-mode:focus { border-color: #39ff14; }
+
+        .chat-submit {
+            background: transparent;
+            border: 2px solid #00f3ff;
+            color: #00f3ff;
+            padding: 0 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1.1rem;
+            transition: all 0.2s;
+            align-self: flex-end;
+            height: 42px;
+        }
+
+        .chat-submit:hover     { background: #00f3ff; color: #000; }
+        .chat-submit.edit-mode { border-color: #39ff14; color: #39ff14; }
+        .chat-submit.edit-mode:hover { background: #39ff14; color: #000; }
+
+        .mode-hint {
+            font-size: 0.7rem;
+            color: #555;
+            text-align: center;
+            padding: 4px 14px 0;
+            font-family: 'Orbitron', sans-serif;
+        }
+
+        /* Typing indicator */
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 0;
+        }
+
+        .typing-indicator span {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background-color: #00f3ff;
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40%            { transform: scale(1); }
+        }
+
+        /* ── Right Panel: Reveal.js Preview ──────────────────── */
+        .right-panel {
+            flex: 1;
+            position: relative;
+            background: #000;
+            overflow: hidden;
+        }
+
+        .reveal-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0; left: 0;
+        }
+
+        /* Download button overlay */
+        .download-wrapper {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            z-index: 100;
+        }
+
+        .download-btn {
+            background: #39ff14;
+            color: #050505;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: bold;
+            font-size: 1rem;
+            padding: 14px 28px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            box-shadow: 0 0 20px rgba(57, 255, 20, 0.4);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .download-btn:hover {
+            background: #fff;
+            color: #000;
+            box-shadow: 0 0 30px rgba(255, 255, 255, 0.7);
+            transform: scale(1.05);
+        }
+
+        /* Responsive: stack panels on small screens */
+        @media (max-width: 900px) {
+            .container { flex-direction: column; overflow: auto; }
+            .left-panel { flex: none; height: 50vh; border-right: none; border-bottom: 2px solid #00f3ff; }
+            .right-panel { height: 50vh; }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- ── Persistent Header ─────────────────────────────────────────────── -->
+    <div class="header">
+        <div class="headerLeft" style="cursor:pointer" onclick="window.location.href='/'">
+            <img src="/images/CheatCodeIARE.png" alt="logo" class="logo">
+            <p class="title">CheatCodeIARE</p>
+        </div>
+        <div class="headerRight">
+            <button class="signupbtn" onclick="window.location.href='/ppt'">NEW PPT</button>
+        </div>
+    </div>
+
+    <!-- ── Main Layout ───────────────────────────────────────────────────── -->
+    <div class="container">
+
+        <!-- Left Panel: Chatbot -->
+        <div class="left-panel">
+            <div class="chat-header">
+                <i class="fa-solid fa-robot"></i> AI Assistant
+            </div>
+
+            <!-- Mode Tabs -->
+            <div class="chat-tabs">
+                <button class="chat-tab active" id="tabChat" onclick="switchTab('chat')">
+                    <i class="fa-solid fa-comments"></i> Chat
+                </button>
+                <button class="chat-tab" id="tabEdit" onclick="switchTab('edit')">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> Edit Slides
+                </button>
+            </div>
+
+            <!-- Messages -->
+            <div class="chat-history" id="chatHistory">
+                <div class="message msg-bot">
+                    Presentation ready! 🎉 Use the <strong>Chat</strong> tab to ask me anything, or switch to <strong>Edit Slides</strong> to modify your presentation with natural language (e.g. "Make the introduction shorter" or "Add a slide about future scope").
+                </div>
+            </div>
+
+            <!-- Input -->
+            <p class="mode-hint" id="modeHint">Chat mode — ask me anything</p>
+            <div class="chat-input-area">
+                <textarea id="chatInput" class="chat-input" rows="2" placeholder="Ask me anything..."></textarea>
+                <button id="sendBtn" class="chat-submit">
+                    <i class="fa-solid fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Right Panel: Reveal.js Preview -->
+        <div class="right-panel">
+            <div class="reveal-container">
+                <div class="reveal">
+                    <div class="slides" id="slidesContainer">
+                        <!-- Populated by renderSlides() -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Download Button -->
+            <div class="download-wrapper">
+                <form action="/download-ppt" method="POST">
+                    <button type="submit" class="download-btn">
+                        <i class="fa-solid fa-download"></i> DOWNLOAD PPT
+                    </button>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Reveal.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.js"></script>
+
+    <script>
+    (function () {
+        'use strict';
+
+        // ── Data from server ──────────────────────────────────────────────
+        let slideData   = <%- JSON.stringify(pptData) %>;
+        const userDetails = {
+            name:      "<%= user.name %>",
+            studentId: "<%= user.studentId %>"
+        };
+
+        // ── State ──────────────────────────────────────────────────────────
+        let revealDeck  = null;
+        let currentMode = 'chat';          // 'chat' | 'edit'
+        let chatHistory = [];              // multi-turn history for /api/chat
+
+        // ── Tab Switching ──────────────────────────────────────────────────
+        window.switchTab = function (mode) {
+            currentMode = mode;
+
+            document.getElementById('tabChat').classList.toggle('active', mode === 'chat');
+            document.getElementById('tabEdit').classList.toggle('active', mode === 'edit');
+
+            const input  = document.getElementById('chatInput');
+            const btn    = document.getElementById('sendBtn');
+            const hint   = document.getElementById('modeHint');
+
+            if (mode === 'edit') {
+                input.placeholder = 'Describe the slide change you want...';
+                input.classList.add('edit-mode');
+                btn.classList.add('edit-mode');
+                hint.textContent = 'Edit mode — changes will update the preview';
+            } else {
+                input.placeholder = 'Ask me anything...';
+                input.classList.remove('edit-mode');
+                btn.classList.remove('edit-mode');
+                hint.textContent = 'Chat mode — ask me anything';
+            }
+        };
+
+        // ── Render Reveal.js Slides ────────────────────────────────────────
+        function renderSlides() {
+            const slidesContainer = document.getElementById('slidesContainer');
+            if (!slidesContainer) return;
+
+            const content = slideData.content;
+            const theme = {
+                bgColor:       "EDEDEE",
+                primaryColor:  "003366",
+                textColor:     "000000",
+                accentColor:   "004170",
+                thankYouColor: "51237F"
+            };
+
+            let html = '';
+
+            // 1. Title Slide
+            html += `
+                <section data-background-color="#${theme.bgColor}">
+                    <h2 style="color:#${theme.accentColor};font-family:Arial;font-weight:bold;margin-bottom:30px;">
+                        AAT - TECH TALK
+                    </h2>
+                    <div style="text-align:left;width:80%;margin:0 auto;">
+                        <p style="font-size:28px;">
+                            <strong style="color:#${theme.accentColor};">Topic - </strong>
+                            <span style="color:#${theme.accentColor};">${escHtml(slideData.problemStatement)}</span>
+                        </p>
+                        <div style="margin-top:40px;font-size:22px;color:#${theme.textColor};">
+                            <p><strong style="color:#${theme.accentColor};">Name: </strong>${escHtml(userDetails.name)}</p>
+                            <p><strong style="color:#${theme.accentColor};">Roll No: </strong>${escHtml(userDetails.studentId)}</p>
+                            <p><strong style="color:#${theme.accentColor};">Branch: </strong>${escHtml(slideData.department)}</p>
+                            <p><strong style="color:#${theme.accentColor};">Subject: </strong>${escHtml(slideData.subject)}</p>
+                        </div>
+                    </div>
+                </section>`;
+
+            // 2. Index Slide
+            const indexItems = (content.index || []).map((item, i) =>
+                `<li style="color:#${theme.textColor};margin-bottom:12px;font-size:22px;">${i + 1}. ${escHtml(item)}</li>`
+            ).join('');
+            html += `
+                <section data-background-color="#${theme.bgColor}">
+                    <h3 style="color:#${theme.primaryColor};border-bottom:2px solid #${theme.primaryColor};padding-bottom:8px;margin-bottom:30px;text-transform:uppercase;">
+                        INDEX
+                    </h3>
+                    <ul style="list-style:none;padding:0;text-align:left;width:80%;margin:0 auto;">${indexItems}</ul>
+                </section>`;
+
+            // 3. Introduction Slide
+            html += `
+                <section data-background-color="#${theme.bgColor}">
+                    <h3 style="color:#${theme.primaryColor};border-bottom:2px solid #${theme.primaryColor};padding-bottom:8px;margin-bottom:30px;text-transform:uppercase;">
+                        INTRODUCTION
+                    </h3>
+                    <p style="color:#${theme.textColor};font-size:24px;line-height:1.7;text-align:left;width:90%;margin:0 auto;">
+                        ${escHtml(content.introduction || '')}
+                    </p>
+                </section>`;
+
+            // 4. Content Slides
+            (content.slides || []).forEach(slide => {
+                const bullets = (slide.bulletPoints || []).map(b =>
+                    `<li style="color:#${theme.textColor};margin-bottom:16px;font-size:22px;">${escHtml(b)}</li>`
+                ).join('');
+                html += `
+                    <section data-background-color="#${theme.bgColor}">
+                        <h3 style="color:#${theme.primaryColor};border-bottom:2px solid #${theme.primaryColor};padding-bottom:8px;margin-bottom:30px;text-transform:uppercase;">
+                            ${escHtml(slide.heading || '')}
+                        </h3>
+                        <ul style="font-size:22px;text-align:left;width:90%;margin:0 auto;list-style:disc;">${bullets}</ul>
+                    </section>`;
+            });
+
+            // 5. Conclusion Slide
+            html += `
+                <section data-background-color="#${theme.bgColor}">
+                    <h3 style="color:#${theme.primaryColor};border-bottom:2px solid #${theme.primaryColor};padding-bottom:8px;margin-bottom:30px;text-transform:uppercase;">
+                        CONCLUSION
+                    </h3>
+                    <p style="color:#${theme.textColor};font-size:24px;line-height:1.7;text-align:left;width:90%;margin:0 auto;">
+                        ${escHtml(content.conclusion || '')}
+                    </p>
+                </section>`;
+
+            // 6. Thank You Slide
+            html += `
+                <section data-background-color="#${theme.bgColor}">
+                    <h1 style="color:#${theme.thankYouColor};font-weight:bold;margin-top:15%;">THANK YOU</h1>
+                </section>`;
+
+            slidesContainer.innerHTML = html;
+
+            // Reinitialise Reveal.js after DOM update
+            setTimeout(() => {
+                if (revealDeck) {
+                    try { revealDeck.destroy(); } catch (e) { /* ignore */ }
+                    revealDeck = null;
+                }
+                revealDeck = new Reveal(document.querySelector('.reveal'), {
+                    controls:       true,
+                    progress:       true,
+                    center:         true,
+                    hash:           false,
+                    transition:     'slide',
+                    embedded:       false,
+                    slideNumber:    'c/t',
+                    width:          960,
+                    height:         700,
+                    margin:         0.1,
+                    minScale:       0.2,
+                    maxScale:       2.0
+                });
+                revealDeck.initialize();
+            }, 200);
+        }
+
+        // ── Chat: append a message bubble ─────────────────────────────────
+        function appendMessage(text, role, extraClass) {
+            const hist = document.getElementById('chatHistory');
+            const div  = document.createElement('div');
+            div.className = `message msg-${role}` + (extraClass ? ` ${extraClass}` : '');
+            div.textContent = text;
+            hist.appendChild(div);
+            hist.scrollTop = hist.scrollHeight;
+            return div;
+        }
+
+        function appendTyping() {
+            const hist = document.getElementById('chatHistory');
+            const div  = document.createElement('div');
+            div.className = 'message msg-bot';
+            div.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+            hist.appendChild(div);
+            hist.scrollTop = hist.scrollHeight;
+            return div;
+        }
+
+        // ── Send message handler ───────────────────────────────────────────
+        async function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const text  = input.value.trim();
+            if (!text) return;
+
+            appendMessage(text, 'user');
+            input.value = '';
+
+            const typingBubble = appendTyping();
+
+            if (currentMode === 'edit') {
+                // ── Edit-slides mode: call /api/edit-ppt ──────────────────
+                try {
+                    const res  = await fetch('/api/edit-ppt', {
+                        method:  'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body:    JSON.stringify({ prompt: text })
+                    });
+                    const data = await res.json();
+
+                    if (data.success) {
+                        typingBubble.innerHTML = '';
+                        typingBubble.textContent = "Done! I've updated your presentation. Check the preview →";
+                        typingBubble.classList.add('msg-success');
+                        slideData.content = data.content;
+                        renderSlides();
+                    } else {
+                        typingBubble.textContent = "Error: " + (data.error || "Could not update slides.");
+                        typingBubble.classList.add('msg-error');
+                    }
+                } catch (e) {
+                    typingBubble.textContent = "Network error: " + e.message;
+                    typingBubble.classList.add('msg-error');
+                }
+
+            } else {
+                // ── Chat mode: call /api/chat ─────────────────────────────
+                try {
+                    const res  = await fetch('/api/chat', {
+                        method:  'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body:    JSON.stringify({ message: text, history: chatHistory })
+                    });
+                    const data = await res.json();
+
+                    if (data.success) {
+                        typingBubble.innerHTML  = '';
+                        typingBubble.textContent = data.reply;
+                        // Keep history for multi-turn context
+                        chatHistory.push({ role: 'user',      text: text });
+                        chatHistory.push({ role: 'assistant', text: data.reply });
+                        // Cap history at last 20 turns to avoid huge payloads
+                        if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+                    } else {
+                        typingBubble.textContent = data.reply || "Sorry, something went wrong.";
+                        typingBubble.classList.add('msg-error');
+                    }
+                } catch (e) {
+                    typingBubble.textContent = "Network error: " + e.message;
+                    typingBubble.classList.add('msg-error');
+                }
+            }
+
+            document.getElementById('chatHistory').scrollTop =
+                document.getElementById('chatHistory').scrollHeight;
+        }
+
+        // ── Utility: escape HTML in dynamic content ────────────────────────
+        function escHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        // ── Event listeners ───────────────────────────────────────────────
+        document.getElementById('sendBtn').addEventListener('click', sendMessage);
+        document.getElementById('chatInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // ── Boot ──────────────────────────────────────────────────────────
+        renderSlides();
+
+    })();
+    </script>
+
+    <!-- Vercel Web Analytics -->
+    <script>
+        window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments) };
+    </script>
+    <script defer src="/_vercel/insights/script.js"></script>
+</body>
+
+</html>
