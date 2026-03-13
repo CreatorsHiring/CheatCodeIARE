@@ -166,7 +166,7 @@
                     <label>Problem Statement</label>
                     <textarea name="problemStatement" rows="4" required placeholder="Describe your topic..."></textarea>
                 </div>
-                <button type="submit" class="generate-btn">
+                <button type="submit" class="generate-btn" id="generateBtn">
                     <i class="fa-solid fa-bolt"></i> GENERATE PPT
                 </button>
                 <div id="loading" class="loading">Generating Cybernetic Content... <i
@@ -176,28 +176,26 @@
     </div>
 
     <script>
-        document.getElementById('pptForm').addEventListener('submit', function (e) {
-            e.preventDefault(); // Prevent immediate submission
-            const form = this;
-            const submitBtn = document.querySelector('.generate-btn');
-            const loadingDiv = document.getElementById('loading');
-            
-            console.log('Form submitted, showing loading...');
-            
-            // Hide button and show loading animation
-            submitBtn.style.visibility = 'hidden';
-            submitBtn.style.display = 'none';
-            loadingDiv.style.display = 'block';
-            loadingDiv.innerHTML = 'Generating Cybernetic Content... <i class="fa-solid fa-spinner" style="animation: fa-spin 2s infinite linear;"></i>';
-            
-            console.log('Loading displayed, will submit in 500ms...');
-            
-            // Small delay to ensure loading animation is visible
-            setTimeout(() => {
-                console.log('Submitting form now...');
-                form.submit(); // Submit the form
-            }, 500);
-        });
+        document.getElementById('pptForm').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const btn = document.getElementById('generateBtn');
+        const loading = document.getElementById('loading');
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.style.display = 'none';
+        loading.style.display = 'block';
+
+        const body = new URLSearchParams(new FormData(this)).toString();
+        try {
+            const res  = await fetch('/generate-ppt', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+            const data = await res.json();
+            if (data.queued) { window.location.href = '/queue'; }
+            else { loading.textContent = '❌ ' + (data.error || 'Unknown error'); btn.disabled = false; btn.style.display = 'flex'; }
+        } catch (err) {
+            loading.textContent = '❌ Network error. Please try again.';
+            btn.disabled = false; btn.style.display = 'flex';
+        }
+    });
     </script>
 
     <!-- Vercel Web Analytics -->
