@@ -193,6 +193,7 @@
     </div>
 
     <script>
+        let heartbeatTimer = null;
         const userId  = "<%= user.studentId %>";
         const POLL_MS = 3000;
         let pollTimer = null;
@@ -219,9 +220,16 @@
             dotIndex = (dotIndex + 1) % dots.length;
         }, 500);
 
+        // send first heartbeat immediately
+        fetch(`/heartbeat/${userId}`, { method:"POST" });
+
+        heartbeatTimer = setInterval(()=>{
+            fetch(`/heartbeat/${userId}`, { method:"POST" });
+        }, 5000);
+
         async function poll() {
             try {
-                const res  = await fetch(`/ppt-status/${userId}`);
+                const res = await fetch(`/ppt-status/${userId}?t=${Date.now()}`);
                 const data = await res.json();
 
                 if (data.status === "waiting") {
@@ -253,7 +261,7 @@
                     dots.forEach(d => { d.classList.add("active"); d.style.background = "#39ff14"; });
 
                     // Short delay so user sees the done state, then redirect
-                    setTimeout(() => { window.location.href = "/edit"; }, 1200);
+                    setTimeout(() => { window.location.href = `/edit/${userId}`; }, 1200);
 
                 } else if (data.status === "error") {
                     clearInterval(dotTimer);
@@ -273,6 +281,14 @@
                 console.error("Poll error:", e);
             }
         }
+
+        setInterval(()=>{
+
+            fetch(`/heartbeat/${userId}`, {
+                method:"POST"
+            });
+
+        }, 5000);
 
         // Start polling immediately then every 3s
         poll();

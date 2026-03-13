@@ -424,7 +424,19 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
 
 // ─── Queue Worker: process next job if slot available ─────────────────────────
 async function processNextInQueue() {
+
+    let lockAcquired = false;
+
     try {
+
+        const lock = await redis.set("queue_lock", "1", { nx: true, ex: 5 });
+
+        if (!lock) {
+            return;
+        }
+
+        lockAcquired = true;
+
         // Check active job count
         const activeRaw = await redis.get("active_jobs");
         const activeJobs = parseInt(activeRaw || "0", 10);
@@ -443,16 +455,19 @@ async function processNextInQueue() {
 
         // Increment active jobs counter
         await redis.incr("active_jobs");
+
         await redis.set(
             `ppt_result:${userId}`,
             JSON.stringify({ status: "generating" }),
             { ex: JOB_TTL_SECONDS }
         );
 
-        // Update waiting positions for remaining users
+        // Update waiting positions
         const remaining = await redis.lrange("ppt_queue", 0, -1);
+
         for (let i = 0; i < remaining.length; i++) {
             const waitingId = remaining[i];
+
             await redis.set(
                 `ppt_result:${waitingId}`,
                 JSON.stringify({ status: "waiting", position: i + 1 }),
@@ -462,17 +477,34 @@ async function processNextInQueue() {
 
         console.log(`[Queue] Starting job for user: ${userId} | Active: ${activeJobs + 1}/${MAX_ACTIVE_JOBS}`);
 
-        // Run generation in background — do NOT await here so the function returns immediately
-        runPptJob(userId).catch(err => console.error(`[Queue] Job failed for ${userId}:`, err));
+        // Run generation async
+        runPptJob(userId).catch(err =>
+            console.error(`[Queue] Job failed for ${userId}:`, err)
+        );
 
     } catch (err) {
+
         console.error("[Queue] processNextInQueue error:", err);
+
+    } finally {
+
+        // Always release lock
+        if (lockAcquired) {
+            await redis.del("queue_lock");
+        }
+
     }
 }
 
 // ─── Run the actual PPT generation job ────────────────────────────────────────
 async function runPptJob(userId) {
     try {
+        const active = await redis.get(`user_active:${userId}`);
+
+        if(!active){
+        console.log("User left, cancelling job");
+        return;
+        }
         // Retrieve form data stored during /generate-ppt — stored in Redis too for safety
         const formRaw = await redis.get(`ppt_form:${userId}`);
         const formData = formRaw
@@ -507,20 +539,45 @@ async function runPptJob(userId) {
             { ex: 60 }
         );
     } finally {
-        // Always decrement active jobs and trigger next in queue
         await redis.decr("active_jobs");
-        processNextInQueue().catch(err => console.error("[Queue] processNextInQueue error:", err));
+
+        const active = parseInt(await redis.get("active_jobs") || "0");
+
+        if (active < 0) {
+        await redis.set("active_jobs", 0);
+        }
     }
 }
 
+// ─── Heartbeat: tells server user is still on queue page ──────────────────────
+app.post("/heartbeat/:userId", async (req,res)=>{
+
+    const { userId } = req.params;
+
+    try {
+
+        // mark user as active for 15 seconds
+        await redis.set(`user_active:${userId}`, "1", { ex: 15 });
+
+        res.sendStatus(200);
+
+    } catch(err){
+
+        console.error("[Heartbeat] error:", err);
+        res.sendStatus(500);
+
+    }
+
+});
+
 // ─── Status Polling Endpoint ──────────────────────────────────────────────────
-app.get("/ppt-status/:userId", isAuthenticated, async (req, res) => {
+app.get("/ppt-status/:userId",  async (req, res) => {
     const { userId } = req.params;
 
     // Security: users can only check their own status
-    if (req.session.user.studentId !== userId) {
-        return res.status(403).json({ error: "Forbidden" });
-    }
+    // if (req.session.user.studentId !== userId) {
+    //     return res.status(403).json({ error: "Forbidden" });
+    // }
 
     try {
         const raw = await redis.get(`ppt_result:${userId}`);
@@ -531,10 +588,10 @@ app.get("/ppt-status/:userId", isAuthenticated, async (req, res) => {
         const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
         if (data.status === "done") {
-            // Store result in session and clean up Redis
-            req.session.pptData = data.pptData;
-            await redis.del(`ppt_result:${userId}`);
-            await redis.del(`ppt_form:${userId}`);
+            return res.json({
+            status: "done",
+            pptData: data.pptData
+            });
         }
 
         return res.json(data);
@@ -551,17 +608,25 @@ app.get("/queue", isAuthenticated, (req, res) => {
 });
 
 // ─── Edit Page ────────────────────────────────────────────────────────────────
-app.get("/edit", isAuthenticated, (req, res) => {
-    const pptData = req.session.pptData;
+app.get("/edit/:userId", async (req, res) => {
 
-    if (!pptData) {
-        // Nothing generated yet — send back to form
+    const { userId } = req.params;
+
+    const raw = await redis.get(`ppt_result:${userId}`);
+
+    if (!raw) {
+        return res.redirect("/ppt");
+    }
+
+    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+
+    if (data.status !== "done") {
         return res.redirect("/ppt");
     }
 
     res.render("edit", {
-        user: req.session.user,
-        pptData: pptData
+        user: { name: "Student", studentId: userId },
+        pptData: data.pptData
     });
 });
 
