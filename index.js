@@ -40,13 +40,10 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Fallback chain — tried in order when a model fails (429, 503, quota errors).
 // Best/newest first, most stable last.
 const MODEL_FALLBACK_CHAIN = [
-    "gemini-2.5-flash",       // latest 2.5 flash (stable alias)
-    "gemini-2.5-pro",         // latest 2.5 pro (stable alias)
-    "gemini-2.0-flash",       // solid 2.0 flash
-    "gemini-flash-latest",
-    "gemini-pro-latest",
-    "gemini-1.5-flash",       // very stable fallback
-    "gemini-1.5-pro",         // older pro, widely available
+    "gemini-3.1-flash-lite-preview", // BEST: 2.5x faster startup than 2.5 Flash
+    "gemini-3.1-flash-preview",      // High speed, higher intelligence
+    "gemini-2.5-flash",              // Your reliable "stable" backup
+    "gemini-3.1-pro-preview"         // The "Brain": slow but fixes errors
 ];
 
 const SAFETY_SETTINGS = [
