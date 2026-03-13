@@ -3,7 +3,6 @@ const path = require("path");
 const session = require("express-session");
 const dotenv = require("dotenv");
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
-const PQueue = require("p-queue").default;
 const PptxGenJS = require("pptxgenjs");
 const PizZip = require("pizzip");
 const Docxtemplater = require("docxtemplater");
@@ -37,12 +36,6 @@ app.use('/fa', express.static(path.join(__dirname, 'node_modules/@fortawesome/fo
 
 // ─── Gemini Setup ─────────────────────────────────────────────────────────────
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-const aiQueue = new PQueue({
-    concurrency: 1, 
-    interval: 2000, 
-    intervalCap: 1
-});
 
 // Fallback chain — tried in order when a model fails (429, 503, quota errors).
 // Best/newest first, most stable last.
@@ -93,9 +86,9 @@ async function generateWithFallback(promptFn, useJsonMode = false) {
                 generationConfig: useJsonMode ? { responseMimeType: "application/json" } : {},
                 safetySettings: SAFETY_SETTINGS,
             });
-            console.log(`[Gemini] Trying: ${modelName} | Queue size: ${aiQueue.size} | Pending: ${aiQueue.pending}`);
+            console.log(`[Gemini] Trying: ${modelName}`);
             // Run the actual API call through the queue — max 6 concurrent Gemini requests
-            const result = await aiQueue.add(() => promptFn(model));
+            const result = await promptFn(model);
             console.log(`[Gemini] Success: ${modelName}`);
             return result;
         } catch (err) {
