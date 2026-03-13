@@ -8,7 +8,6 @@
     "ejs": "^3.1.10",
     "express": "^5.2.1",
     "express-session": "^1.18.2",
-    "p-queue": "^7.4.1",
     "pizzip": "^3.2.0",
     "pptxgenjs": "^4.0.1",
     "reveal.js": "^5.2.1"
