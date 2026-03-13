@@ -40,10 +40,9 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Fallback chain — tried in order when a model fails (429, 503, quota errors).
 // Best/newest first, most stable last.
 const MODEL_FALLBACK_CHAIN = [
-    "gemini-3.1-flash-lite-preview", // BEST: 2.5x faster startup than 2.5 Flash
-    "gemini-3.1-flash-preview",      // High speed, higher intelligence
-    "gemini-2.5-flash",              // Your reliable "stable" backup
-    "gemini-3.1-pro-preview"         // The "Brain": slow but fixes errors
+    "gemini-2.0-flash-lite-001",      // 1. Cheapest (₹6 per 1M tokens) - The one you asked for
+    "gemini-2.5-flash-lite",         // 2. Best Value (₹8 per 1M tokens) - Highly recommended
+    "gemini-3.1-flash-lite-preview"  // 3. Newest & Fastest (₹20 per 1M tokens) - Backup
 ];
 
 const SAFETY_SETTINGS = [
@@ -151,9 +150,9 @@ async function generatePptContent(problemStatement) {
     }
 
     Rules:
-    - Generate exactly 10 index items and exactly 10 corresponding slides in the same order.
+    - Generate exactly 8 index items and exactly 8 corresponding slides in the same order.
     - Each slide must have exactly 4-5 bullet points.
-    - Every bullet point must be a complete, detailed sentence — not a fragment or keyword The sentences must be Bullet Points.
+    - Every bullet point must be a complete, detailed sentence — not a fragment or keyword.
     - Do NOT use LaTeX. Write formulas in plain text (e.g., E = mc^2).
     - Tone must be academic, technical, and formal — suitable for a university-level AAT.
     - Do NOT include filler phrases like "In conclusion" or "As we can see".
@@ -273,15 +272,17 @@ async function buildPptxBuffer(content, formData, user) {
         const bulletItems = slideData.bulletPoints.map(bp => ({
             text: bp,
             options: {
-                bullet: { type: "bullet", characterCode: "2022" },
+                bullet: { code: "2022" },
                 fontSize: 14,
                 color: TEXT_MAIN,
-                paraSpaceAfter: 6,
+                paraSpaceAfter: 8,
+                indentLevel: 0,
             }
         }));
         s.addText(bulletItems, {
             x: CONTENT_X, y: CONTENT_Y, w: CONTENT_W, h: CONTENT_H,
-            valign: "top", lineSpacingMultiple: 1.3
+            valign: "top", lineSpacingMultiple: 1.35,
+            indentLevel: 0,
         });
     });
 
