@@ -328,6 +328,7 @@
             <!-- Download Button -->
             <div class="download-wrapper">
                 <form action="/download-ppt" method="POST">
+                    <input type="hidden" name="userId" value="<%= user.studentId %>">
                     <button type="submit" class="download-btn">
                         <i class="fa-solid fa-download"></i> DOWNLOAD PPT
                     </button>
