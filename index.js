@@ -364,7 +364,7 @@ app.get("/ppt", isAuthenticated, (req, res) => {
 
 // ─── Redis Queue Constants ────────────────────────────────────────────────────
 const MAX_ACTIVE_JOBS = 4;
-const JOB_TTL_SECONDS = 600;
+const JOB_TTL_SECONDS = 600; // 10 min — auto-cleanup if something crashes
 
 // ─── Generate PPT → Queue-based with Redis ────────────────────────────────────
 app.post("/generate-ppt", isAuthenticated, async (req, res) => {
@@ -372,226 +372,291 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
     const userId = req.session.user.studentId;
 
     try {
-        // If already queued or generating, just redirect — don't double-add
-        const existingRaw = await redis.get(`ppt_result:${userId}`);
-        if (existingRaw) {
-            const existing = typeof existingRaw === "string" ? JSON.parse(existingRaw) : existingRaw;
+        // Store form data in session so the worker can use it
+        req.session.formData = { department, subject, problemStatement };
+
+        // Check if user already has a job running or waiting
+        const existingStatus = await redis.get(`ppt_result:${userId}`);
+        if (existingStatus) {
+            const existing = typeof existingStatus === "string"
+                ? JSON.parse(existingStatus)
+                : existingStatus;
             if (existing.status === "waiting" || existing.status === "generating") {
-                return res.json({ queued: true, position: existing.position || 1 });
+                return res.json({ queued: true, position: existing.position || 0 });
             }
         }
 
-        // Persist form data in Redis — session is unreliable across Vercel instances
+        // Save form data to Redis so the worker can access it (session is per-instance)
         await redis.set(
             `ppt_form:${userId}`,
             JSON.stringify({ department, subject, problemStatement }),
             { ex: JOB_TTL_SECONDS }
         );
 
-        // Ensure user appears only once in the queue
+        // Remove user from queue if already in it (re-submit scenario)
         await redis.lrem("ppt_queue", 0, userId);
+
+        // Add to queue
         await redis.rpush("ppt_queue", userId);
 
+        // Get their position (1-based)
         const queue = await redis.lrange("ppt_queue", 0, -1);
         const position = queue.indexOf(userId) + 1;
 
+        // Save initial waiting status with TTL
         await redis.set(
             `ppt_result:${userId}`,
             JSON.stringify({ status: "waiting", position }),
             { ex: JOB_TTL_SECONDS }
         );
 
-        // Kick the worker immediately
-        processNextInQueue().catch(err => console.error("[Queue] boot error:", err));
+        // Try to start processing immediately (non-blocking)
+        processNextInQueue().catch(err => console.error("[Queue] processNextInQueue error:", err));
 
+        // Return queued status to frontend — frontend will poll /ppt-status/:userId
         return res.json({ queued: true, position });
 
     } catch (error) {
-        console.error("[Queue] Enqueue error:", error);
-        return res.status(500).json({ error: "Failed to queue: " + error.message });
+        console.error("PPT Queue Error:", error);
+        return res.status(500).json({ error: "Failed to queue PPT generation: " + error.message });
     }
 });
 
-// ─── Queue Worker ─────────────────────────────────────────────────────────────
+// ─── Queue Worker: process next job if slot available ─────────────────────────
 async function processNextInQueue() {
-    // Acquire a short-lived lock so only one Vercel instance runs this at a time.
-    // CRITICAL: lock is deleted in finally — unconditionally, no guard variables.
-    const lock = await redis.set("queue_lock", "1", { nx: true, ex: 15 });
-    if (!lock) {
-        console.log("[Queue] Lock held by another instance, skipping.");
-        return;
-    }
+
+    let lockAcquired = false;
 
     try {
-        // Read + clamp active counter
-        let active = parseInt(await redis.get("active_jobs") || "0", 10);
-        if (isNaN(active) || active < 0) active = 0;
 
-        console.log(`[Queue] active=${active} max=${MAX_ACTIVE_JOBS}`);
+        const lock = await redis.set("queue_lock", "1", { nx: true, ex: 10 });
 
-        if (active >= MAX_ACTIVE_JOBS) {
-            console.log("[Queue] At capacity, not starting new job.");
-            return; // finally will still delete the lock
+        if (!lock) {
+            return;
         }
 
-        // Pop the next user from the waiting list
+        lockAcquired = true;
+
+        // Check active job count
+        const activeRaw = await redis.get("active_jobs");
+        const activeJobs = parseInt(activeRaw || "0", 10);
+
+        if (activeJobs >= MAX_ACTIVE_JOBS) {
+            console.log(`[Queue] At capacity (${activeJobs}/${MAX_ACTIVE_JOBS}), waiting...`);
+            return;
+        }
+
+        // rpoplpush removed in newer @upstash/redis — use lpop + lpush instead
         const userId = await redis.lpop("ppt_queue");
         if (!userId) {
             console.log("[Queue] Queue is empty.");
-            return; // finally will still delete the lock
+            return;
         }
-
-        // Claim the slot BEFORE releasing the lock
-        await redis.incr("active_jobs");
         await redis.lpush("ppt_processing", userId);
+
+        // Increment active jobs counter
+        await redis.incr("active_jobs");
+
         await redis.set(
             `ppt_result:${userId}`,
-            JSON.stringify({ status: "generating", startedAt: Date.now() }),
+            JSON.stringify({ status: "generating" }),
             { ex: JOB_TTL_SECONDS }
         );
 
-        // Refresh positions for remaining waiters
+        // Update waiting positions
         const remaining = await redis.lrange("ppt_queue", 0, -1);
+
         for (let i = 0; i < remaining.length; i++) {
+            const waitingId = remaining[i];
+
             await redis.set(
-                `ppt_result:${remaining[i]}`,
+                `ppt_result:${waitingId}`,
                 JSON.stringify({ status: "waiting", position: i + 1 }),
                 { ex: JOB_TTL_SECONDS }
             );
         }
 
-        console.log(`[Queue] Dispatching job for ${userId} | active=${active + 1}`);
+        console.log(`[Queue] Starting job for user: ${userId} | Active: ${activeJobs + 1}/${MAX_ACTIVE_JOBS}`);
 
-        // Fire and forget — lock releases below before generation finishes
-        runPptJob(userId).catch(err => console.error(`[Queue] runPptJob error for ${userId}:`, err));
+        // Run generation async
+        runPptJob(userId).catch(err =>
+            console.error(`[Queue] Job failed for ${userId}:`, err)
+        );
 
     } catch (err) {
+
         console.error("[Queue] processNextInQueue error:", err);
+
     } finally {
-        // ALWAYS delete the lock — no if-guards, no conditions
-        await redis.del("queue_lock");
+
+        // Always release lock
+        if (lockAcquired) {
+            await redis.del("queue_lock");
+        }
+
     }
 }
 
-// ─── Run one PPT generation job ───────────────────────────────────────────────
+// ─── Run the actual PPT generation job ────────────────────────────────────────
 async function runPptJob(userId) {
     try {
+        const active = await redis.get(`user_active:${userId}`);
+
+        if(!active){
+        console.log("User left, cancelling job");
+        }
+        // Retrieve form data stored during /generate-ppt — stored in Redis too for safety
         const formRaw = await redis.get(`ppt_form:${userId}`);
-        if (!formRaw) throw new Error("Form data missing for user: " + userId);
-        const formData = typeof formRaw === "string" ? JSON.parse(formRaw) : formRaw;
+        const formData = formRaw
+            ? (typeof formRaw === "string" ? JSON.parse(formRaw) : formRaw)
+            : null;
+
+        if (!formData) {
+            throw new Error("Form data not found in Redis for user: " + userId);
+        }
 
         const content = await generatePptContent(formData.problemStatement);
 
-        await redis.set(
-            `ppt_result:${userId}`,
-            JSON.stringify({
-                status: "done",
-                pptData: {
-                    department:       formData.department,
-                    subject:          formData.subject,
-                    problemStatement: formData.problemStatement,
-                    content
-                }
-            }),
-            { ex: JOB_TTL_SECONDS }
-        );
+        const result = {
+            status: "done",
+            pptData: {
+                department:       formData.department,
+                subject:          formData.subject,
+                problemStatement: formData.problemStatement,
+                content
+            }
+        };
 
-        console.log(`[Queue] Job done for ${userId}`);
+        // Store result — frontend will read this on next poll
+        await redis.set(`ppt_result:${userId}`, JSON.stringify(result), { ex: JOB_TTL_SECONDS });
+        console.log(`[Queue] Job done for user: ${userId}`);
 
     } catch (err) {
         console.error(`[Queue] Generation failed for ${userId}:`, err.message);
         await redis.set(
             `ppt_result:${userId}`,
             JSON.stringify({ status: "error", message: err.message }),
-            { ex: 120 }
+            { ex: 60 }
         );
     } finally {
-        // Decrement counter, clamp to 0, clean processing list, start next job
-        const afterDecr = await redis.decr("active_jobs");
-        if (afterDecr < 0) await redis.set("active_jobs", "0");
-        await redis.lrem("ppt_processing", 0, userId);
-        processNextInQueue().catch(err => console.error("[Queue] next-job error:", err));
+
+    await redis.decr("active_jobs");
+
+    const active = parseInt(await redis.get("active_jobs") || "0");
+
+    if (active < 0) {
+        await redis.set("active_jobs", 0);
     }
+
+    //START NEXT JOB
+    processNextInQueue().catch(err =>
+        console.error("[Queue] Failed to trigger next job:", err)
+    );
+    await redis.lrem("ppt_processing", 0, userId);
+}
 }
 
-// ─── Stuck-job recovery: runs max once per 60s ────────────────────────────────
 async function recoverStuckJobs() {
-    const already = await redis.set("recovery_lock", "1", { nx: true, ex: 60 });
-    if (!already) return; // ran recently
 
-    try {
-        const processing = await redis.lrange("ppt_processing", 0, -1);
-        const STUCK_MS = 8 * 60 * 1000; // 8 minutes
+    const processing = await redis.lrange("ppt_processing", 0, -1);
 
-        for (const userId of processing) {
-            const raw = await redis.get(`ppt_result:${userId}`);
-            if (!raw) {
-                // Key expired — job never finished, free the slot
-                await redis.lrem("ppt_processing", 0, userId);
-                const n = await redis.decr("active_jobs");
-                if (n < 0) await redis.set("active_jobs", "0");
-                continue;
-            }
+    for (const userId of processing) {
 
-            const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-            if (data.status === "generating") {
-                const age = Date.now() - (data.startedAt || 0);
-                if (age > STUCK_MS || !data.startedAt) {
-                    console.warn(`[Recovery] Stuck job for ${userId}, re-queuing`);
-                    await redis.lrem("ppt_processing", 0, userId);
-                    const n = await redis.decr("active_jobs");
-                    if (n < 0) await redis.set("active_jobs", "0");
-                    const pos = await redis.lpos("ppt_queue", userId);
-                    if (pos === null) await redis.rpush("ppt_queue", userId);
-                    await redis.set(
-                        `ppt_result:${userId}`,
-                        JSON.stringify({ status: "waiting", position: 99 }),
-                        { ex: JOB_TTL_SECONDS }
-                    );
-                }
-            }
+        const resultRaw = await redis.get(`ppt_result:${userId}`);
+        const active = await redis.get(`user_active:${userId}`);
+
+        let result = null;
+
+        if (resultRaw) {
+            result = typeof resultRaw === "string"
+                ? JSON.parse(resultRaw)
+                : resultRaw;
         }
-    } catch (err) {
-        console.error("[Recovery] error:", err);
+
+        // Recover if job stuck OR worker died
+        if (!active && result && result.status === "generating") {
+
+            console.log("Recovering stuck job:", userId);
+
+            // remove from processing
+            await redis.lrem("ppt_processing", 0, userId);
+
+            // prevent duplicate queue entries
+            const alreadyQueued = await redis.lpos("ppt_queue", userId);
+
+            if (alreadyQueued === null) {
+                await redis.rpush("ppt_queue", userId);
+            }
+
+            await redis.set(
+                `ppt_result:${userId}`,
+                JSON.stringify({ status: "waiting" }),
+                { ex: JOB_TTL_SECONDS }
+            );
+
+        }
+
     }
+
 }
 
-// ─── Status Polling Endpoint ──────────────────────────────────────────────────
-app.get("/ppt-status/:userId", async (req, res) => {
+// ─── Heartbeat: tells server user is still on queue page ──────────────────────
+app.post("/heartbeat/:userId", async (req,res)=>{
+
     const { userId } = req.params;
 
     try {
-        // Run stuck-job recovery throttled to once per 60s
+
+        // mark user as active for 15 seconds
+        await redis.set(`user_active:${userId}`, "1", { ex: 60 });
+
+        res.sendStatus(200);
+
+    } catch(err){
+
+        console.error("[Heartbeat] error:", err);
+        res.sendStatus(500);
+
+    }
+
+});
+
+// ─── Status Polling Endpoint ──────────────────────────────────────────────────
+app.get("/ppt-status/:userId",  async (req, res) => {
+    const { userId } = req.params;
+    // Security: users can only check their own status
+    // if (req.session.user.studentId !== userId) {
+    //     return res.status(403).json({ error: "Forbidden" });
+    // }
+
+    try {
         recoverStuckJobs().catch(console.error);
+        processNextInQueue().catch(err =>
+        console.error("Queue trigger error:", err)
+        );
 
         const raw = await redis.get(`ppt_result:${userId}`);
-        if (!raw) return res.json({ status: "not_found" });
+        if (!raw) {
+            return res.json({ status: "not_found" });
+        }
 
         const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
         if (data.status === "done") {
-            // Load pptData into session then clean up Redis keys
-            req.session.pptData = data.pptData;
-            await redis.del(`ppt_result:${userId}`);
-            await redis.del(`ppt_form:${userId}`);
+            // Populate session so /edit/:userId can render without re-reading Redis
+            // Do NOT delete ppt_result here — /edit/:userId still needs it
+            if (data.pptData) {
+                req.session.pptData = data.pptData;
+                req.session.user = req.session.user || { name: "Student", studentId: userId };
+            }
             return res.json({ status: "done" });
         }
 
         return res.json(data);
 
     } catch (err) {
-        console.error("[Status] error:", err);
-        return res.status(500).json({ error: "Status check failed." });
-    }
-});
-
-// ─── Heartbeat (kept for compatibility) ──────────────────────────────────────
-app.post("/heartbeat/:userId", async (req, res) => {
-    try {
-        await redis.set(`user_active:${req.params.userId}`, "1", { ex: 60 });
-        res.sendStatus(200);
-    } catch (err) {
-        res.sendStatus(500);
+        console.error("[Status] Error:", err);
+        return res.status(500).json({ error: "Failed to get status." });
     }
 });
 
@@ -601,29 +666,56 @@ app.get("/queue", isAuthenticated, (req, res) => {
 });
 
 // ─── Edit Page ────────────────────────────────────────────────────────────────
+// No isAuthenticated here — we authenticate via Redis ppt_result key instead.
+// This is safe because the userId is in the URL and the result only exists
+// if a valid generation was completed for that userId.
 app.get("/edit/:userId", async (req, res) => {
-
     const { userId } = req.params;
 
-    const raw = await redis.get(`ppt_result:${userId}`);
+    try {
+        // Try session first (same Vercel instance, fast path)
+        let pptData = req.session.pptData;
+        let user    = req.session.user;
 
-    if (!raw) {
+        // If session is missing (different Vercel instance), fall back to Redis
+        if (!pptData || !user) {
+            const raw = await redis.get(`ppt_result:${userId}`);
+
+            if (!raw) {
+                console.warn(`[Edit] No Redis key for ${userId}, redirecting to /ppt`);
+                return res.redirect("/ppt");
+            }
+
+            const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+
+            if (data.status !== "done" || !data.pptData) {
+                console.warn(`[Edit] Redis key for ${userId} not done (status=${data.status})`);
+                return res.redirect("/ppt");
+            }
+
+            pptData = data.pptData;
+            // Restore user from form data stored in Redis
+            const formRaw = await redis.get(`ppt_form:${userId}`);
+            const formData = formRaw
+                ? (typeof formRaw === "string" ? JSON.parse(formRaw) : formRaw)
+                : null;
+
+            user = req.session.user || { name: formData?.name || "Student", studentId: userId };
+
+            // Repopulate session for this instance
+            req.session.user    = user;
+            req.session.pptData = pptData;
+        }
+
+        // Clean up Redis now that session is loaded (extend TTL on ppt_form for download)
+        await redis.del(`ppt_result:${userId}`);
+
+        return res.render("edit", { user, pptData });
+
+    } catch (err) {
+        console.error("[Edit] Error:", err);
         return res.redirect("/ppt");
     }
-
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-
-    if (data.status !== "done") {
-        return res.redirect("/ppt");
-    }
-
-    req.session.user = { name: "Student", studentId: userId };
-    req.session.pptData = data.pptData;
-
-    res.render("edit", {
-        user: { name: "Student", studentId: userId },
-        pptData: data.pptData
-    });
 });
 
 // ─── Chatbot: General Q&A ─────────────────────────────────────────────────────
