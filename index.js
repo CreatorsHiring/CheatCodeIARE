@@ -364,7 +364,7 @@ app.get("/ppt", isAuthenticated, (req, res) => {
 
 // ─── Redis Queue Constants ────────────────────────────────────────────────────
 const MAX_ACTIVE_JOBS = 4;
-const JOB_TTL_SECONDS = 600; // 10 min TTL on all job keys
+const JOB_TTL_SECONDS = 600; // 10 min — auto-cleanup if something crashes
 
 // ─── Generate PPT → Queue-based with Redis ────────────────────────────────────
 app.post("/generate-ppt", isAuthenticated, async (req, res) => {
@@ -372,39 +372,48 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
     const userId = req.session.user.studentId;
 
     try {
-        // Check if user already has a live job — don't double-queue
-        const existingRaw = await redis.get(`ppt_result:${userId}`);
-        if (existingRaw) {
-            const existing = typeof existingRaw === "string" ? JSON.parse(existingRaw) : existingRaw;
+        // Store form data in session so the worker can use it
+        req.session.formData = { department, subject, problemStatement };
+
+        // Check if user already has a job running or waiting
+        const existingStatus = await redis.get(`ppt_result:${userId}`);
+        if (existingStatus) {
+            const existing = typeof existingStatus === "string"
+                ? JSON.parse(existingStatus)
+                : existingStatus;
             if (existing.status === "waiting" || existing.status === "generating") {
                 return res.json({ queued: true, position: existing.position || 0 });
             }
         }
 
-        // Save form data to Redis (session not reliable across Vercel instances)
+        // Save form data to Redis so the worker can access it (session is per-instance)
         await redis.set(
             `ppt_form:${userId}`,
             JSON.stringify({ department, subject, problemStatement }),
             { ex: JOB_TTL_SECONDS }
         );
 
-        // Remove any stale entry for this user then push to back of queue
+        // Remove user from queue if already in it (re-submit scenario)
         await redis.lrem("ppt_queue", 0, userId);
+
+        // Add to queue
         await redis.rpush("ppt_queue", userId);
 
-        // Compute 1-based position
+        // Get their position (1-based)
         const queue = await redis.lrange("ppt_queue", 0, -1);
         const position = queue.indexOf(userId) + 1;
 
+        // Save initial waiting status with TTL
         await redis.set(
             `ppt_result:${userId}`,
             JSON.stringify({ status: "waiting", position }),
             { ex: JOB_TTL_SECONDS }
         );
 
-        // Kick the worker — fire and forget
-        processNextInQueue().catch(err => console.error("[Queue] boot error:", err));
+        // Try to start processing immediately (non-blocking)
+        processNextInQueue().catch(err => console.error("[Queue] processNextInQueue error:", err));
 
+        // Return queued status to frontend — frontend will poll /ppt-status/:userId
         return res.json({ queued: true, position });
 
     } catch (error) {
@@ -413,187 +422,230 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
     }
 });
 
-// ─── Queue Worker ─────────────────────────────────────────────────────────────
-// BUG FIX 1: lock is ALWAYS released in finally — even when at capacity.
-// Previously an early `return` inside try bypassed the finally lock release,
-// meaning the lock expired only after 10s and no jobs could start in between.
+// ─── Queue Worker: process next job if slot available ─────────────────────────
 async function processNextInQueue() {
-    const lock = await redis.set("queue_lock", "1", { nx: true, ex: 30 });
-    if (!lock) return; // another instance is already deciding — skip
+
+    let lockAcquired = false;
 
     try {
-        // BUG FIX 2: clamp active_jobs to 0 if it somehow went negative
-        // (crash mid-job could leave the counter drifted below zero forever)
-        let activeJobs = parseInt(await redis.get("active_jobs") || "0", 10);
-        if (activeJobs < 0) {
-            activeJobs = 0;
-            await redis.set("active_jobs", 0);
-        }
 
-        if (activeJobs >= MAX_ACTIVE_JOBS) {
-            console.log(`[Queue] At capacity (${activeJobs}/${MAX_ACTIVE_JOBS})`);
-            return; // lock released in finally below
-        }
+        const lock = await redis.set("queue_lock", "1", { nx: true, ex: 10 });
 
-        // Atomically move next job from waiting → processing list
-        const userId = await redis.rpoplpush("ppt_queue", "ppt_processing");
-        if (!userId) {
-            console.log("[Queue] Queue empty.");
+        if (!lock) {
             return;
         }
 
+        lockAcquired = true;
+
+        // Check active job count
+        const activeRaw = await redis.get("active_jobs");
+        const activeJobs = parseInt(activeRaw || "0", 10);
+
+        if (activeJobs >= MAX_ACTIVE_JOBS) {
+            console.log(`[Queue] At capacity (${activeJobs}/${MAX_ACTIVE_JOBS}), waiting...`);
+            return;
+        }
+
+        // rpoplpush removed in newer @upstash/redis — use lpop + lpush instead
+        const userId = await redis.lpop("ppt_queue");
+        if (!userId) {
+            console.log("[Queue] Queue is empty.");
+            return;
+        }
+        await redis.lpush("ppt_processing", userId);
+
+        // Increment active jobs counter
         await redis.incr("active_jobs");
+
         await redis.set(
             `ppt_result:${userId}`,
-            JSON.stringify({ status: "generating", startedAt: Date.now() }),
+            JSON.stringify({ status: "generating" }),
             { ex: JOB_TTL_SECONDS }
         );
 
-        // Update positions for remaining waiters
+        // Update waiting positions
         const remaining = await redis.lrange("ppt_queue", 0, -1);
+
         for (let i = 0; i < remaining.length; i++) {
+            const waitingId = remaining[i];
+
             await redis.set(
-                `ppt_result:${remaining[i]}`,
+                `ppt_result:${waitingId}`,
                 JSON.stringify({ status: "waiting", position: i + 1 }),
                 { ex: JOB_TTL_SECONDS }
             );
         }
 
-        console.log(`[Queue] Starting job for ${userId} | active=${activeJobs + 1}/${MAX_ACTIVE_JOBS}`);
+        console.log(`[Queue] Starting job for user: ${userId} | Active: ${activeJobs + 1}/${MAX_ACTIVE_JOBS}`);
 
-        // Fire off generation — do NOT await so the lock releases immediately
-        runPptJob(userId).catch(err => console.error(`[Queue] Job error for ${userId}:`, err));
+        // Run generation async
+        runPptJob(userId).catch(err =>
+            console.error(`[Queue] Job failed for ${userId}:`, err)
+        );
 
     } catch (err) {
+
         console.error("[Queue] processNextInQueue error:", err);
+
     } finally {
-        // BUG FIX 1 (cont): lock ALWAYS released here, no matter which path above ran
-        await redis.del("queue_lock");
+
+        // Always release lock
+        if (lockAcquired) {
+            await redis.del("queue_lock");
+        }
+
     }
 }
 
-// ─── Run one PPT generation job ───────────────────────────────────────────────
+// ─── Run the actual PPT generation job ────────────────────────────────────────
 async function runPptJob(userId) {
     try {
+        const active = await redis.get(`user_active:${userId}`);
+
+        if(!active){
+        console.log("User left, cancelling job");
+        }
+        // Retrieve form data stored during /generate-ppt — stored in Redis too for safety
         const formRaw = await redis.get(`ppt_form:${userId}`);
         const formData = formRaw
             ? (typeof formRaw === "string" ? JSON.parse(formRaw) : formRaw)
             : null;
 
-        if (!formData) throw new Error("Form data missing for user: " + userId);
+        if (!formData) {
+            throw new Error("Form data not found in Redis for user: " + userId);
+        }
 
         const content = await generatePptContent(formData.problemStatement);
 
-        await redis.set(
-            `ppt_result:${userId}`,
-            JSON.stringify({
-                status: "done",
-                pptData: {
-                    department:       formData.department,
-                    subject:          formData.subject,
-                    problemStatement: formData.problemStatement,
-                    content
-                }
-            }),
-            { ex: JOB_TTL_SECONDS }
-        );
+        const result = {
+            status: "done",
+            pptData: {
+                department:       formData.department,
+                subject:          formData.subject,
+                problemStatement: formData.problemStatement,
+                content
+            }
+        };
 
-        console.log(`[Queue] Job done for ${userId}`);
+        // Store result — frontend will read this on next poll
+        await redis.set(`ppt_result:${userId}`, JSON.stringify(result), { ex: JOB_TTL_SECONDS });
+        console.log(`[Queue] Job done for user: ${userId}`);
 
     } catch (err) {
         console.error(`[Queue] Generation failed for ${userId}:`, err.message);
         await redis.set(
             `ppt_result:${userId}`,
             JSON.stringify({ status: "error", message: err.message }),
-            { ex: 120 }
+            { ex: 60 }
         );
     } finally {
-        // BUG FIX 2 (cont): decrement then clamp — never go below 0
-        const afterDecr = await redis.decr("active_jobs");
-        if (afterDecr < 0) await redis.set("active_jobs", 0);
 
-        // Clean up processing list
-        await redis.lrem("ppt_processing", 0, userId);
+    await redis.decr("active_jobs");
 
-        // Immediately try to start the next waiting job
-        processNextInQueue().catch(err => console.error("[Queue] next-job trigger error:", err));
+    const active = parseInt(await redis.get("active_jobs") || "0");
+
+    if (active < 0) {
+        await redis.set("active_jobs", 0);
     }
+
+    //START NEXT JOB
+    processNextInQueue().catch(err =>
+        console.error("[Queue] Failed to trigger next job:", err)
+    );
+    await redis.lrem("ppt_processing", 0, userId);
+}
 }
 
-// ─── Stuck-job recovery ───────────────────────────────────────────────────────
-// BUG FIX 3: recovery now uses a timestamp, not user_active heartbeat.
-// A job is "stuck" if it has been in "generating" state for >5 minutes
-// (Gemini never takes that long). Heartbeat was unreliable because it only
-// fires while the user is on the queue page — which is always true for active jobs.
 async function recoverStuckJobs() {
+
     const processing = await redis.lrange("ppt_processing", 0, -1);
-    const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
     for (const userId of processing) {
+
         const resultRaw = await redis.get(`ppt_result:${userId}`);
-        if (!resultRaw) {
-            // Key expired — job never finished, clean up
+        const active = await redis.get(`user_active:${userId}`);
+
+        let result = null;
+
+        if (resultRaw) {
+            result = typeof resultRaw === "string"
+                ? JSON.parse(resultRaw)
+                : resultRaw;
+        }
+
+        // Recover if job stuck OR worker died
+        if (!active && result && result.status === "generating") {
+
+            console.log("Recovering stuck job:", userId);
+
+            // remove from processing
             await redis.lrem("ppt_processing", 0, userId);
-            const afterDecr = await redis.decr("active_jobs");
-            if (afterDecr < 0) await redis.set("active_jobs", 0);
-            continue;
-        }
 
-        const result = typeof resultRaw === "string" ? JSON.parse(resultRaw) : resultRaw;
+            // prevent duplicate queue entries
+            const alreadyQueued = await redis.lpos("ppt_queue", userId);
 
-        if (result.status === "generating") {
-            const startedAt = result.startedAt || 0;
-            const age = Date.now() - startedAt;
-
-            if (age > STUCK_THRESHOLD_MS || startedAt === 0) {
-                console.warn(`[Recovery] Stuck job detected for ${userId}, re-queuing...`);
-
-                await redis.lrem("ppt_processing", 0, userId);
-                const afterDecr = await redis.decr("active_jobs");
-                if (afterDecr < 0) await redis.set("active_jobs", 0);
-
-                // Only re-queue if not already there
-                const alreadyQueued = await redis.lpos("ppt_queue", userId);
-                if (alreadyQueued === null) {
-                    await redis.rpush("ppt_queue", userId);
-                }
-
-                await redis.set(
-                    `ppt_result:${userId}`,
-                    JSON.stringify({ status: "waiting", position: 99 }),
-                    { ex: JOB_TTL_SECONDS }
-                );
+            if (alreadyQueued === null) {
+                await redis.rpush("ppt_queue", userId);
             }
+
+            await redis.set(
+                `ppt_result:${userId}`,
+                JSON.stringify({ status: "waiting" }),
+                { ex: JOB_TTL_SECONDS }
+            );
+
         }
+
     }
+
 }
 
-// ─── Status Polling Endpoint ──────────────────────────────────────────────────
-// BUG FIX 4: removed processNextInQueue() call from every poll.
-// At 3s polling intervals this was hammering the lock and starving real workers.
-// Recovery runs at most once every 30s via a Redis timestamp gate instead.
-app.get("/ppt-status/:userId", async (req, res) => {
+// ─── Heartbeat: tells server user is still on queue page ──────────────────────
+app.post("/heartbeat/:userId", async (req,res)=>{
+
     const { userId } = req.params;
 
     try {
-        // Throttled recovery: only run once per 30s globally
-        const lastRecovery = await redis.get("last_recovery");
-        if (!lastRecovery) {
-            await redis.set("last_recovery", Date.now(), { ex: 30 });
-            recoverStuckJobs().catch(console.error);
-        }
+
+        // mark user as active for 15 seconds
+        await redis.set(`user_active:${userId}`, "1", { ex: 60 });
+
+        res.sendStatus(200);
+
+    } catch(err){
+
+        console.error("[Heartbeat] error:", err);
+        res.sendStatus(500);
+
+    }
+
+});
+
+// ─── Status Polling Endpoint ──────────────────────────────────────────────────
+app.get("/ppt-status/:userId",  async (req, res) => {
+    const { userId } = req.params;
+    // Security: users can only check their own status
+    // if (req.session.user.studentId !== userId) {
+    //     return res.status(403).json({ error: "Forbidden" });
+    // }
+
+    try {
+        recoverStuckJobs().catch(console.error);
+        processNextInQueue().catch(err =>
+        console.error("Queue trigger error:", err)
+        );
 
         const raw = await redis.get(`ppt_result:${userId}`);
-        if (!raw) return res.json({ status: "not_found" });
+        if (!raw) {
+            return res.json({ status: "not_found" });
+        }
 
         const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
         if (data.status === "done") {
-            // Move pptData into session, clean up Redis
-            req.session.pptData = data.pptData;
-            await redis.del(`ppt_result:${userId}`);
-            await redis.del(`ppt_form:${userId}`);
-            return res.json({ status: "done" });
+            return res.json({
+            status: "done",
+            });
         }
 
         return res.json(data);
@@ -601,16 +653,6 @@ app.get("/ppt-status/:userId", async (req, res) => {
     } catch (err) {
         console.error("[Status] Error:", err);
         return res.status(500).json({ error: "Failed to get status." });
-    }
-});
-
-// ─── Heartbeat (kept for compatibility, no longer used for recovery logic) ────
-app.post("/heartbeat/:userId", async (req, res) => {
-    try {
-        await redis.set(`user_active:${req.params.userId}`, "1", { ex: 60 });
-        res.sendStatus(200);
-    } catch (err) {
-        res.sendStatus(500);
     }
 });
 
