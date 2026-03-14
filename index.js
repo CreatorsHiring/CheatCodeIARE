@@ -31,7 +31,7 @@ app.use(express.json());
 app.use(session({
     secret: process.env.SESSION_SECRET || "cheatcodeiare_secret_key",
     resave: false,
-    saveUninitialized: true
+    saveUninitialized: false
 }));
 
 // ─── View Engine ─────────────────────────────────────────────────────────────
@@ -628,6 +628,9 @@ app.get("/edit/:userId", async (req, res) => {
     if (data.status !== "done") {
         return res.redirect("/ppt");
     }
+
+    req.session.user = { name: "Student", studentId: userId };
+    req.session.pptData = data.pptData;
 
     res.render("edit", {
         user: { name: "Student", studentId: userId },
