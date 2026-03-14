@@ -429,7 +429,7 @@ async function processNextInQueue() {
 
     try {
 
-        const lock = await redis.set("queue_lock", "1", { nx: true, ex: 5 });
+        const lock = await redis.set("queue_lock", "1", { nx: true, ex: 3 });
 
         if (!lock) {
             return;
@@ -503,7 +503,6 @@ async function runPptJob(userId) {
 
         if(!active){
         console.log("User left, cancelling job");
-        return;
         }
         // Retrieve form data stored during /generate-ppt — stored in Redis too for safety
         const formRaw = await redis.get(`ppt_form:${userId}`);
@@ -539,14 +538,20 @@ async function runPptJob(userId) {
             { ex: 60 }
         );
     } finally {
-        await redis.decr("active_jobs");
 
-        const active = parseInt(await redis.get("active_jobs") || "0");
+    await redis.decr("active_jobs");
 
-        if (active < 0) {
+    const active = parseInt(await redis.get("active_jobs") || "0");
+
+    if (active < 0) {
         await redis.set("active_jobs", 0);
-        }
     }
+
+    //START NEXT JOB
+    processNextInQueue().catch(err =>
+        console.error("[Queue] Failed to trigger next job:", err)
+    );
+}
 }
 
 // ─── Heartbeat: tells server user is still on queue page ──────────────────────
