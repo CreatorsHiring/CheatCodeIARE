@@ -23,7 +23,7 @@ const redis = new Redis({
 });
 
 const app = express();
-const port = 8080;
+
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.urlencoded({ extended: true }));
@@ -429,7 +429,7 @@ async function processNextInQueue() {
 
     try {
 
-        const lock = await redis.set("queue_lock", "1", { nx: true, ex: 3 });
+        const lock = await redis.set("queue_lock", "1", { nx: true, ex: 10 });
 
         if (!lock) {
             return;
@@ -446,8 +446,7 @@ async function processNextInQueue() {
             return;
         }
 
-        // Pop the next user from the queue (atomic)
-        const userId = await redis.lpop("ppt_queue");
+        const userId = await redis.rpoplpush("ppt_queue", "ppt_processing");
         if (!userId) {
             console.log("[Queue] Queue is empty.");
             return;
@@ -551,7 +550,52 @@ async function runPptJob(userId) {
     processNextInQueue().catch(err =>
         console.error("[Queue] Failed to trigger next job:", err)
     );
+    await redis.lrem("ppt_processing", 0, userId);
 }
+}
+
+async function recoverStuckJobs() {
+
+    const processing = await redis.lrange("ppt_processing", 0, -1);
+
+    for (const userId of processing) {
+
+        const resultRaw = await redis.get(`ppt_result:${userId}`);
+        const active = await redis.get(`user_active:${userId}`);
+
+        let result = null;
+
+        if (resultRaw) {
+            result = typeof resultRaw === "string"
+                ? JSON.parse(resultRaw)
+                : resultRaw;
+        }
+
+        // Recover if job stuck OR worker died
+        if (!active && result && result.status === "generating") {
+
+            console.log("Recovering stuck job:", userId);
+
+            // remove from processing
+            await redis.lrem("ppt_processing", 0, userId);
+
+            // prevent duplicate queue entries
+            const alreadyQueued = await redis.lpos("ppt_queue", userId);
+
+            if (alreadyQueued === null) {
+                await redis.rpush("ppt_queue", userId);
+            }
+
+            await redis.set(
+                `ppt_result:${userId}`,
+                JSON.stringify({ status: "waiting" }),
+                { ex: JOB_TTL_SECONDS }
+            );
+
+        }
+
+    }
+
 }
 
 // ─── Heartbeat: tells server user is still on queue page ──────────────────────
@@ -562,7 +606,7 @@ app.post("/heartbeat/:userId", async (req,res)=>{
     try {
 
         // mark user as active for 15 seconds
-        await redis.set(`user_active:${userId}`, "1", { ex: 15 });
+        await redis.set(`user_active:${userId}`, "1", { ex: 60 });
 
         res.sendStatus(200);
 
@@ -578,13 +622,17 @@ app.post("/heartbeat/:userId", async (req,res)=>{
 // ─── Status Polling Endpoint ──────────────────────────────────────────────────
 app.get("/ppt-status/:userId",  async (req, res) => {
     const { userId } = req.params;
-
     // Security: users can only check their own status
     // if (req.session.user.studentId !== userId) {
     //     return res.status(403).json({ error: "Forbidden" });
     // }
 
     try {
+        recoverStuckJobs().catch(console.error);
+        processNextInQueue().catch(err =>
+        console.error("Queue trigger error:", err)
+        );
+
         const raw = await redis.get(`ppt_result:${userId}`);
         if (!raw) {
             return res.json({ status: "not_found" });
@@ -595,7 +643,6 @@ app.get("/ppt-status/:userId",  async (req, res) => {
         if (data.status === "done") {
             return res.json({
             status: "done",
-            pptData: data.pptData
             });
         }
 
@@ -758,35 +805,59 @@ Rules:
 });
 
 // ─── Download PPT ─────────────────────────────────────────────────────────────
-// Builds and streams the PPTX file from whatever is currently in the session.
-app.post("/download-ppt", isAuthenticated, async (req, res) => {
-    try {
-        const pptData = req.session.pptData;
+app.post("/download-ppt", async (req, res) => {
 
-        if (!pptData) {
-            return res.status(400).send("No presentation data found. Please generate a PPT first.");
+    try {
+
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).send("Missing userId");
+        }
+
+        const raw = await redis.get(`ppt_result:${userId}`);
+
+        if (!raw) {
+            return res.status(404).send("Presentation not found.");
+        }
+
+        const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+
+        if (data.status !== "done") {
+            return res.status(400).send("Presentation not ready.");
         }
 
         const buffer = await buildPptxBuffer(
-            pptData.content,
+            data.pptData.content,
             {
-                department:       pptData.department,
-                subject:          pptData.subject,
-                problemStatement: pptData.problemStatement
+                department: data.pptData.department,
+                subject: data.pptData.subject,
+                problemStatement: data.pptData.problemStatement
             },
-            req.session.user
+            { name: "Student", studentId: userId }
         );
 
-        const safeFilename = `${req.session.user.name.replace(/\s+/g, '_')}_AAT.pptx`;
+        const filename = `${userId}_AAT.pptx`;
 
-        res.setHeader("Content-Disposition", `attachment; filename="${safeFilename}"`);
-        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${filename}"`
+        );
+
+        res.setHeader(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        );
+
         res.send(buffer);
 
-    } catch (error) {
-        console.error("Download PPT Error:", error);
-        res.status(500).send("Error building PPTX file. " + error.message);
+    } catch (err) {
+
+        console.error("Download Error:", err);
+        res.status(500).send("Download failed.");
+
     }
+
 });
 
 // ─── Report Page ──────────────────────────────────────────────────────────────
@@ -979,6 +1050,12 @@ app.post("/generate-report", isAuthenticated, async (req, res) => {
 });
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
-app.listen(port, () => {
-    console.log(`Server listening on port ${port}`);
-});
+const PORT = process.env.PORT || 8080;
+
+if (process.env.VERCEL !== "1") {
+    app.listen(PORT, () => {
+        console.log(`Server listening on port ${PORT}`);
+    });
+}
+
+module.exports = app;
