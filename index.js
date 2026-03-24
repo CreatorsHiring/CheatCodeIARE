@@ -851,50 +851,216 @@ app.get("/worksheets", (req, res) => {
 
 // ─── (Keep existing report generation logic below) ────────────────────────────
 
-const markdownToWordXML = (text) => {
-    if (!text) return "";
-
-    let xml = text
+// ─── Escape raw text for Word XML ────────────────────────────────────────────
+function escXml(str) {
+    return String(str || "")
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&apos;");
+}
 
-    const lines = xml.split('\n');
-    let finalXml = "";
-    let inTable = false;
+// ─── Symbol substitution — replaces text codes with proper Unicode ───────────
+function applySymbols(text) {
+    return text
+        .replace(/\bohm\b/gi,      '\u03A9')   // Ω
+        .replace(/\bOhm\b/g,       '\u03A9')
+        .replace(/Omega/g,         '\u03A9')
+        .replace(/\bpi\b/gi,       '\u03C0')   // π
+        .replace(/\balpha\b/gi,    '\u03B1')   // α
+        .replace(/\bbeta\b/gi,     '\u03B2')   // β
+        .replace(/\bgamma\b/gi,    '\u03B3')   // γ
+        .replace(/\bdelta\b/gi,    '\u03B4')   // δ
+        .replace(/\bDelta\b/g,     '\u0394')   // Δ
+        .replace(/\bmu\b/gi,       '\u03BC')   // μ
+        .replace(/\btheta\b/gi,    '\u03B8')   // θ
+        .replace(/\bomega\b/gi,    '\u03C9')   // ω (lowercase)
+        .replace(/\bsigma\b/gi,    '\u03C3')   // σ
+        .replace(/\bphi\b/gi,      '\u03C6')   // φ
+        .replace(/\blambda\b/gi,   '\u03BB')   // λ
+        .replace(/\betaeta\b/gi,   '\u03B7')   // η
+        .replace(/\^2\b/g,         '\u00B2')   // ²
+        .replace(/\^3\b/g,         '\u00B3')   // ³
+        .replace(/>=|=>|&gt;=/g,   '\u2265')   // ≥
+        .replace(/<=|=<|&lt;=/g,   '\u2264')   // ≤
+        .replace(/ -> /g,          ' \u2192 ') // →
+        .replace(/sqrt\(([^)]+)\)/g, '\u221A($1)') // √(x)
+        .replace(/\+-/g,           '\u00B1')   // ±
+        .replace(/\binfinity\b/gi, '\u221E')   // ∞
+        .replace(/\bdeg\b/gi,      '\u00B0')   // °
+        .replace(/\bmu_0\b/gi,     '\u03BC\u2080') // μ₀
+        .replace(/\bepsilon\b/gi,  '\u03B5');  // ε
+}
 
-    lines.forEach(line => {
-        const trimmedLine = line.trim();
-        if (!trimmedLine) return;
+// ─── Build a Word XML paragraph ───────────────────────────────────────────────
+// opts: { bold, italic, bullet, spaceAfter, spaceBefore, fontSize, indent, centered }
+function makeWordPara(text, opts = {}) {
+    const {
+        bold = false, italic = false, bullet = false,
+        spaceAfter = 80, spaceBefore = 0, fontSize = 22,
+        indent = 0, centered = false
+    } = opts;
 
-        if (trimmedLine.startsWith("TABLE:")) {
-            inTable = true;
-            finalXml += '<w:tbl><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr>';
-            return;
-        }
+    const safeText = applySymbols(escXml(text));
 
-        if (inTable) {
-            if (line.includes("|")) {
-                finalXml += "<w:tr>";
-                const cells = line.split("|");
-                cells.forEach(cell => {
-                    const cellContent = cell.trim();
-                    finalXml += `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${cellContent}</w:t></w:r></w:p></w:tc>`;
-                });
-                finalXml += "</w:tr>";
-            } else {
-                inTable = false;
-                finalXml += "</w:tbl>";
-                finalXml += `<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t xml:space="preserve">${line}</w:t></w:r></w:p>`;
-            }
-        } else {
-            finalXml += `<w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t xml:space="preserve">${line}</w:t></w:r></w:p>`;
-        }
+    let pPr = `<w:pPr><w:spacing w:before="${spaceBefore}" w:after="${spaceAfter}"/>`;
+    if (centered) pPr += `<w:jc w:val="center"/>`;
+    if (indent > 0) pPr += `<w:ind w:left="${indent}"/>`;
+    if (bullet) pPr += `<w:ind w:left="720" w:hanging="360"/>`;
+    pPr += `</w:pPr>`;
+
+    let rPr = `<w:rPr><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/>`;
+    if (bold)   rPr += `<w:b/><w:bCs/>`;
+    if (italic) rPr += `<w:i/><w:iCs/>`;
+    rPr += `</w:rPr>`;
+
+    const bulletChar = bullet
+        ? `<w:r><w:rPr><w:sz w:val="${fontSize}"/><w:szCs w:val="${fontSize}"/></w:rPr><w:t xml:space="preserve">• </w:t></w:r>`
+        : "";
+
+    return `<w:p>${pPr}${bulletChar}<w:r>${rPr}<w:t xml:space="preserve">${safeText}</w:t></w:r></w:p>`;
+}
+
+// ─── Build a bordered Word table ──────────────────────────────────────────────
+function makeWordTable(rows) {
+    const borderProps = `
+        <w:top    w:val="single" w:sz="6" w:space="0" w:color="000000"/>
+        <w:left   w:val="single" w:sz="6" w:space="0" w:color="000000"/>
+        <w:bottom w:val="single" w:sz="6" w:space="0" w:color="000000"/>
+        <w:right  w:val="single" w:sz="6" w:space="0" w:color="000000"/>
+        <w:insideH w:val="single" w:sz="6" w:space="0" w:color="000000"/>
+        <w:insideV w:val="single" w:sz="6" w:space="0" w:color="000000"/>`;
+
+    let tbl = `<w:tbl><w:tblPr>
+        <w:tblStyle w:val="TableGrid"/>
+        <w:tblW w:w="0" w:type="auto"/>
+        <w:tblBorders>${borderProps}</w:tblBorders>
+        <w:tblCellMar>
+            <w:top    w:w="100" w:type="dxa"/>
+            <w:left   w:w="144" w:type="dxa"/>
+            <w:bottom w:w="100" w:type="dxa"/>
+            <w:right  w:w="144" w:type="dxa"/>
+        </w:tblCellMar>
+    </w:tblPr>`;
+
+    rows.forEach((row, rowIdx) => {
+        const cells    = row.split("|").map(s => s.trim()).filter(s => s.length > 0);
+        const isHeader = rowIdx === 0;
+        tbl += `<w:tr>`;
+        cells.forEach(cell => {
+            const cellText = applySymbols(escXml(cell));
+            const rPr = isHeader
+                ? `<w:rPr><w:b/><w:bCs/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>`
+                : `<w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>`;
+            const shading = isHeader
+                ? `<w:shd w:val="clear" w:color="auto" w:fill="D9D9D9"/>`
+                : "";
+            tbl += `<w:tc>
+                <w:tcPr><w:tcW w:w="0" w:type="auto"/>${shading}</w:tcPr>
+                <w:p><w:pPr><w:spacing w:after="0"/></w:pPr>
+                <w:r>${rPr}<w:t xml:space="preserve">${cellText}</w:t></w:r></w:p>
+            </w:tc>`;
+        });
+        tbl += `</w:tr>`;
     });
 
-    if (inTable) finalXml += "</w:tbl>";
+    tbl += `</w:tbl><w:p><w:pPr><w:spacing w:after="120"/></w:pPr></w:p>`;
+    return tbl;
+}
+
+// ─── Main converter: structured answer text → Word XML ───────────────────────
+//
+// Line types recognised:
+//   HEADING: Title         → bold, uppercase, larger font, space above
+//   BULLET: sentence       → bullet point, indented
+//   GIVEN: V = 200 V, ...  → bold label "Given:" + indented italic values
+//   STEP: 1. Find current  → bold step label, space above
+//   CALC: Ia = IL - Ish    → centered italic, indented — the actual calculation line
+//   FORMULA: F = ma        → italic, indented
+//   RESULT: Ta = 230.5 Nm  → bold italic, indented — final boxed result line
+//   TABLE: / END_TABLE     → bordered table
+//   (plain text)           → normal paragraph
+//
+const markdownToWordXML = (text) => {
+    if (!text) return "";
+
+    const lines   = text.split("\n");
+    let finalXml  = "";
+    let tableRows = [];
+    let inTable   = false;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        const UP = line.toUpperCase();
+
+        // ── Table handling ────────────────────────────────────────────
+        if (UP === "TABLE:") {
+            inTable = true; tableRows = []; continue;
+        }
+        if (inTable) {
+            if (UP === "END_TABLE") {
+                inTable = false;
+                finalXml += makeWordTable(tableRows);
+                tableRows = [];
+            } else if (line.includes("|")) {
+                tableRows.push(line);
+            }
+            continue;
+        }
+
+        // ── Structured line types ─────────────────────────────────────
+        if (UP.startsWith("HEADING:")) {
+            const t = line.slice(8).trim().toUpperCase();
+            // Extra space before heading so sections breathe
+            finalXml += makeWordPara(t, { bold: true, spaceBefore: 160, spaceAfter: 60, fontSize: 24 });
+
+        } else if (UP.startsWith("BULLET:")) {
+            const t = line.slice(7).trim();
+            finalXml += makeWordPara(t, { bullet: true, spaceAfter: 60, fontSize: 21 });
+
+        } else if (UP.startsWith("GIVEN:")) {
+            // "Given:" label bold, then the values on the same para — indented
+            const values = line.slice(6).trim();
+            // Bold "Given:" prefix
+            const safeV  = applySymbols(escXml(values));
+            finalXml += `<w:p>
+                <w:pPr><w:spacing w:before="120" w:after="60"/><w:ind w:left="360"/></w:pPr>
+                <w:r><w:rPr><w:b/><w:bCs/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>
+                    <w:t xml:space="preserve">Given:  </w:t></w:r>
+                <w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>
+                    <w:t xml:space="preserve">${safeV}</w:t></w:r>
+            </w:p>`;
+
+        } else if (UP.startsWith("STEP:")) {
+            // Step label — bold, space above so each step is clearly separated
+            const t = line.slice(5).trim();
+            finalXml += makeWordPara(t, { bold: true, spaceBefore: 160, spaceAfter: 40, fontSize: 22 });
+
+        } else if (UP.startsWith("CALC:")) {
+            // The actual equation — italic, centered, indented, space below
+            const t = line.slice(5).trim();
+            finalXml += makeWordPara(t, { italic: true, centered: true, spaceAfter: 80, fontSize: 22 });
+
+        } else if (UP.startsWith("FORMULA:")) {
+            // Named formula reference — italic, indented
+            const t = line.slice(8).trim();
+            finalXml += makeWordPara(t, { italic: true, indent: 720, spaceAfter: 80, fontSize: 22 });
+
+        } else if (UP.startsWith("RESULT:")) {
+            // Final answer — bold italic, indented, space above+below
+            const t = line.slice(7).trim();
+            finalXml += makeWordPara(t, { bold: true, italic: true, indent: 720, spaceBefore: 80, spaceAfter: 120, fontSize: 22 });
+
+        } else {
+            // Plain paragraph
+            finalXml += makeWordPara(line, { spaceAfter: 80, fontSize: 22 });
+        }
+    }
+
+    if (inTable && tableRows.length) finalXml += makeWordTable(tableRows);
 
     return finalXml;
 };
@@ -909,24 +1075,89 @@ const batchGenerateAnswers = async (questions) => {
             .join("\n\n");
 
         const prompt = `
-You are an AI academic content generator for a student-focused AAT report system.
-Generate detailed, exam-ready answers for ALL questions below.
+You are an expert academic content generator writing detailed answers for a university AAT (Alternative Assessment Tool) report.
+Generate thorough, exam-ready answers for ALL questions below.
 
-⚠️ Output must be PLAIN TEXT ONLY — no HTML, no Markdown, no XML tags.
-Use CAPITALIZED HEADINGS and hyphen bullets (-) only.
-For tables use:
-TABLE:
-Col A | Col B
-Row1A | Row1B
+━━━ STRICT LINE TYPES — use ONLY these, no Markdown, no HTML, no asterisks ━━━
 
+  HEADING: <TOPIC TITLE IN UPPERCASE>
+  BULLET: <one complete informative sentence>
+  GIVEN: <list all known values on one line, e.g. V = 200 V, Ra = 0.1 Ohm, N = 750 rpm>
+  STEP: <Step N: description of what this step calculates>
+  CALC: <the actual equation and its evaluated result, e.g. Ia = IL - Ish = 100 - 5 = 95 A>
+  RESULT: <final answer with units, e.g. Torque Ta = 230.43 Nm>
+  FORMULA: <named formula used, e.g. Ta = (Eb x Ia) / (2 x pi x N / 60)>
+  TABLE:
+  Col1 | Col2 | Col3
+  Row1A | Row1B | Row1C
+  END_TABLE
+
+━━━ SYMBOL RULES ━━━
+- Write Ohm for Ω (the renderer will convert it automatically)
+- Write pi for π, alpha for α, beta for β, omega for ω, theta for θ
+- Write ^2 for ², ^3 for ³, +- for ±, sqrt(x) for √x, deg for °
+
+━━━ CONTENT RULES ━━━
+1. Every answer MUST start with a HEADING: line.
+2. Theory/concept questions: AT LEAST 5 BULLET: lines of detailed sentences. No STEP/CALC needed.
+3. Calculation questions: use GIVEN: → STEP: + CALC: pattern (one STEP per logical step). Include RESULT: at the end of each sub-part. No BULLET lines needed for pure calc questions.
+4. Mixed questions (theory + calculation): use BULLET for theory, then GIVEN/STEP/CALC/RESULT for the calculation part under a sub-HEADING.
+5. Comparison/difference questions: MUST include a TABLE (Feature | Type A | Type B).
+6. Every formula used in a calculation MUST appear as a FORMULA: line before or after the CALC line.
+7. Multiple HEADING: lines allowed to separate sub-topics or sub-parts (i, ii, iii).
+8. Do NOT use ALL CAPS in BULLET, CALC, STEP, or RESULT lines — only HEADING text is uppercase.
+9. Aim for 180-220 words per answer.
+
+━━━ EXAMPLE — CALCULATION QUESTION ━━━
+HEADING: DC SHUNT MOTOR — TORQUE AND COPPER LOSSES
+GIVEN: V = 200 V, IL = 100 A, N = 750 rpm, Ra = 0.1 Ohm, Rsh = 40 Ohm, Pmech = 1500 W
+HEADING: (i) TORQUE DEVELOPED BY ARMATURE
+STEP: Step 1: Find shunt field current
+FORMULA: Ish = V / Rsh
+CALC: Ish = 200 / 40 = 5 A
+STEP: Step 2: Find armature current
+FORMULA: Ia = IL - Ish
+CALC: Ia = 100 - 5 = 95 A
+STEP: Step 3: Find back EMF
+FORMULA: Eb = V - (Ia x Ra)
+CALC: Eb = 200 - (95 x 0.1) = 200 - 9.5 = 190.5 V
+STEP: Step 4: Find power developed
+FORMULA: Pdev = Eb x Ia
+CALC: Pdev = 190.5 x 95 = 18097.5 W
+STEP: Step 5: Find torque
+FORMULA: Ta = Pdev / (2 x pi x N / 60)
+CALC: Ta = 18097.5 / (2 x pi x 750 / 60) = 18097.5 / 78.54 = 230.43 Nm
+RESULT: Torque developed Ta = 230.43 Nm
+HEADING: (ii) COPPER LOSSES
+STEP: Step 1: Armature copper loss
+FORMULA: Pcu_a = Ia^2 x Ra
+CALC: Pcu_a = 95^2 x 0.1 = 9025 x 0.1 = 902.5 W
+STEP: Step 2: Shunt field copper loss
+FORMULA: Pcu_sh = V x Ish
+CALC: Pcu_sh = 200 x 5 = 1000 W
+STEP: Step 3: Total copper loss
+FORMULA: Pcu = Pcu_a + Pcu_sh
+CALC: Pcu = 902.5 + 1000 = 1902.5 W
+RESULT: Total Copper Loss Pcu = 1902.5 W
+
+━━━ EXAMPLE — THEORY QUESTION ━━━
+HEADING: TRANSFORMER — WORKING PRINCIPLE
+A transformer transfers electrical energy between circuits using electromagnetic induction.
+BULLET: It works on the principle of mutual induction between two coils wound on a common magnetic core.
+BULLET: The primary winding receives AC supply and produces a time-varying magnetic flux.
+BULLET: This alternating flux links the secondary winding and induces an EMF by Faraday's law.
+FORMULA: E = -N x (dPhi/dt)
+BULLET: The turns ratio determines whether the transformer steps up or steps down the voltage.
+BULLET: Ideal transformers have no copper or core losses and 100% efficiency.
+BULLET: Practical applications include power transmission, isolation circuits, and impedance matching.
+
+━━━ JSON RESPONSE FORMAT ━━━
 Return ONLY a raw JSON array — no markdown fences, no extra text:
 [
-  { "index": 0, "answer": "answer for Q1 here" },
-  { "index": 1, "answer": "answer for Q2 here" }
+  { "index": 0, "answer": "full formatted answer for Q1 here" },
+  { "index": 1, "answer": "full formatted answer for Q2 here" }
 ]
-
-Each answer must be detailed and exam-ready (around 100-120 words).
-The "index" must start at 0 and match the question order.
+"index" starts at 0 and matches question order exactly.
 
 QUESTIONS:
 ${numberedQuestions}
@@ -972,61 +1203,212 @@ ${numberedQuestions}
     return answers;
 };
 
+// ─── Report Queue Constants ──────────────────────────────────────────────────
+const MAX_REPORT_JOBS  = 4;
+const REPORT_TTL       = 600; // 10 min
+
+// ─── Enqueue Report ───────────────────────────────────────────────────────────
 app.post("/generate-report", isAuthenticated, async (req, res) => {
+    const userId = req.session.user.studentId;
+
     try {
-        const formData = req.body;
-        const questions = [];
-        for (let i = 1; i <= 10; i++) {
-            questions.push(formData[`question${i}`] || "");
+        // Don't double-queue if already waiting/generating
+        const existingRaw = await redis.get(`report_result:${userId}`);
+        if (existingRaw) {
+            const existing = typeof existingRaw === "string" ? JSON.parse(existingRaw) : existingRaw;
+            if (existing.status === "waiting" || existing.status === "generating") {
+                return res.json({ queued: true, position: existing.position || 1 });
+            }
         }
 
-        // 2. Generate Answers (Batched)
+        // Persist entire form to Redis — session unreliable across Vercel instances
+        const formData = req.body;
+        await redis.set(
+            `report_form:${userId}`,
+            JSON.stringify(formData),
+            { ex: REPORT_TTL }
+        );
+
+        // Add to queue
+        await redis.lrem("report_queue", 0, userId);
+        await redis.rpush("report_queue", userId);
+
+        const queue    = await redis.lrange("report_queue", 0, -1);
+        const position = queue.indexOf(userId) + 1;
+
+        await redis.set(
+            `report_result:${userId}`,
+            JSON.stringify({ status: "waiting", position }),
+            { ex: REPORT_TTL }
+        );
+
+        // Kick the worker
+        processNextReport().catch(err => console.error("[ReportQueue] boot error:", err));
+
+        return res.json({ queued: true, position });
+
+    } catch (err) {
+        console.error("[ReportQueue] Enqueue error:", err);
+        return res.status(500).json({ error: "Failed to queue report: " + err.message });
+    }
+});
+
+// ─── Report Queue Worker ──────────────────────────────────────────────────────
+async function processNextReport() {
+    const lock = await redis.set("report_lock", "1", { nx: true, ex: 15 });
+    if (!lock) { console.log("[ReportQueue] Lock held, skipping."); return; }
+
+    try {
+        let active = parseInt(await redis.get("report_active") || "0", 10);
+        if (isNaN(active) || active < 0) { active = 0; await redis.set("report_active", "0"); }
+
+        console.log(`[ReportQueue] active=${active}/${MAX_REPORT_JOBS}`);
+        if (active >= MAX_REPORT_JOBS) return;
+
+        const userId = await redis.lpop("report_queue");
+        if (!userId) { console.log("[ReportQueue] Queue empty."); return; }
+
+        await redis.lpush("report_processing", userId);
+        await redis.incr("report_active");
+        await redis.set(
+            `report_result:${userId}`,
+            JSON.stringify({ status: "generating", startedAt: Date.now() }),
+            { ex: REPORT_TTL }
+        );
+
+        // Update positions for remaining waiters
+        const remaining = await redis.lrange("report_queue", 0, -1);
+        for (let i = 0; i < remaining.length; i++) {
+            await redis.set(
+                `report_result:${remaining[i]}`,
+                JSON.stringify({ status: "waiting", position: i + 1 }),
+                { ex: REPORT_TTL }
+            );
+        }
+
+        console.log(`[ReportQueue] Dispatching ${userId} | active=${active + 1}`);
+        runReportJob(userId).catch(err => console.error(`[ReportQueue] job error ${userId}:`, err));
+
+    } catch (err) {
+        console.error("[ReportQueue] processNextReport error:", err);
+    } finally {
+        await redis.del("report_lock");
+    }
+}
+
+// ─── Run one report generation job ───────────────────────────────────────────
+async function runReportJob(userId) {
+    try {
+        const formRaw = await redis.get(`report_form:${userId}`);
+        if (!formRaw) throw new Error("Form data missing for user: " + userId);
+        const formData = typeof formRaw === "string" ? JSON.parse(formRaw) : formRaw;
+
+        const questions = [];
+        for (let i = 1; i <= 10; i++) questions.push(formData[`question${i}`] || "");
+
         const rawAnswers = await batchGenerateAnswers(questions);
 
-        // 3. Prepare Data for DOCX with XML transformation
-        const data = {
-            name: formData.name,
-            rollNo: formData.rollNo,
-            program: formData.program,
-            semester: formData.semester,
-            class: formData.class,
-            regulation: formData.regulation,
+        const docData = {
+            name:        formData.name,
+            rollNo:      formData.rollNo,
+            program:     formData.program,
+            semester:    formData.semester,
+            class:       formData.class,
+            regulation:  formData.regulation,
             courseTitle: formData.courseTitle,
-            courseCode: formData.courseCode,
-            aatNo: formData.aatNo,
+            courseCode:  formData.courseCode,
+            aatNo:       formData.aatNo,
         };
-
         for (let i = 0; i < 10; i++) {
-            data[`question${i + 1}`] = questions[i];
-            // Render answer as Raw XML
-            data[`answer${i + 1}`] = markdownToWordXML(rawAnswers[i] || "AI Generation Failed.");
+            docData[`question${i + 1}`] = questions[i];
+            docData[`answer${i + 1}`]   = markdownToWordXML(rawAnswers[i] || "AI Generation Failed.");
         }
 
-        // 4. Load Template and Generate DOCX
         const content = fs.readFileSync(path.join(__dirname, "assets", "ReportTemplate.docx"), "binary");
         const zip = new PizZip(content);
-        const doc = new Docxtemplater(zip, {
-            paragraphLoop: true,
-            linebreaks: true,
-        });
+        const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true });
+        doc.render(docData);
+        const buf = doc.getZip().generate({ type: "nodebuffer", compression: "DEFLATE" });
 
-        doc.render(data);
+        // Store as base64 — Redis only holds strings
+        await redis.set(
+            `report_result:${userId}`,
+            JSON.stringify({
+                status:   "done",
+                fileName: (formData.name || "Student").replace(/[^a-zA-Z0-9_]/g, "_") + "_Report.docx",
+                docBase64: buf.toString("base64")
+            }),
+            { ex: REPORT_TTL }
+        );
 
-        const buf = doc.getZip().generate({
-            type: "nodebuffer",
-            compression: "DEFLATE",
-        });
+        console.log(`[ReportQueue] Job done for ${userId}`);
 
-        const safeReportName = (formData.name || "Student").replace(/[^a-zA-Z0-9_\-]/g, "_");
-        res.setHeader("Content-Disposition", `attachment; filename="${safeReportName}_Report.docx"`);
+    } catch (err) {
+        console.error(`[ReportQueue] Failed for ${userId}:`, err.message);
+        await redis.set(
+            `report_result:${userId}`,
+            JSON.stringify({ status: "error", message: err.message }),
+            { ex: 120 }
+        );
+    } finally {
+        const n = await redis.decr("report_active");
+        if (n < 0) await redis.set("report_active", "0");
+        await redis.lrem("report_processing", 0, userId);
+        processNextReport().catch(err => console.error("[ReportQueue] next-job error:", err));
+    }
+}
+
+// ─── Report Status Polling ────────────────────────────────────────────────────
+app.get("/report-status/:userId", async (req, res) => {
+    const { userId } = req.params;
+    try {
+        const raw = await redis.get(`report_result:${userId}`);
+        if (!raw) return res.json({ status: "not_found" });
+        const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+        // Don't send the base64 blob in the status poll — only send metadata
+        if (data.status === "done") {
+            return res.json({ status: "done", fileName: data.fileName });
+        }
+        return res.json(data);
+    } catch (err) {
+        console.error("[ReportStatus] error:", err);
+        return res.status(500).json({ error: "Status check failed." });
+    }
+});
+
+// ─── Report Download ──────────────────────────────────────────────────────────
+app.get("/download-report/:userId", async (req, res) => {
+    const { userId } = req.params;
+    try {
+        const raw = await redis.get(`report_result:${userId}`);
+        if (!raw) return res.status(404).send("Report not found. Please generate again.");
+
+        const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (data.status !== "done") return res.status(400).send("Report not ready yet.");
+
+        const buf      = Buffer.from(data.docBase64, "base64");
+        const fileName = data.fileName || `${userId}_Report.docx`;
+
+        res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
         res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         res.send(buf);
 
-    } catch (error) {
-        console.error("Report Generation Error:", error);
-        res.status(500).send("Error generating report. " + error.message);
+        // Clean up Redis after successful download
+        await redis.del(`report_result:${userId}`);
+        await redis.del(`report_form:${userId}`);
+
+    } catch (err) {
+        console.error("[ReportDownload] error:", err);
+        res.status(500).send("Download failed: " + err.message);
     }
 });
+
+// ─── Report Queue Waiting Page ────────────────────────────────────────────────
+app.get("/report-queue", isAuthenticated, (req, res) => {
+    res.render("report-queue", { user: req.session.user });
+});
+
+// /report-done route removed — download is automatic, no done page needed
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 8080;
