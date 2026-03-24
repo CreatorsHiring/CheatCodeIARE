@@ -261,9 +261,42 @@
     </div>
 
     <script>
-        document.getElementById('reportForm').addEventListener('submit', function () {
-            document.querySelector('.generate-btn').style.display = 'none';
-            document.getElementById('loading').style.display = 'block';
+        document.getElementById('reportForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const btn     = document.querySelector('.generate-btn');
+            const loading = document.getElementById('loading');
+
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.style.display = 'none';
+            loading.style.display = 'block';
+            loading.innerHTML = 'Adding to queue... <i class="fa-solid fa-spinner fa-spin"></i>';
+
+            const body = new URLSearchParams(new FormData(this)).toString();
+
+            try {
+                const res  = await fetch('/generate-report', {
+                    method:  'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body
+                });
+                const data = await res.json();
+
+                if (data.queued) {
+                    window.location.href = '/report-queue';
+                } else {
+                    loading.innerHTML = '&#10060; ' + (data.error || 'Something went wrong.');
+                    loading.style.color = '#ff4444';
+                    btn.disabled = false;
+                    btn.style.display = 'flex';
+                }
+            } catch (err) {
+                loading.innerHTML = '&#10060; Network error. Please try again.';
+                loading.style.color = '#ff4444';
+                btn.disabled = false;
+                btn.style.display = 'flex';
+            }
         });
     </script>
 </body>
