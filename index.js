@@ -849,6 +849,11 @@ app.get("/worksheets", (req, res) => {
     res.render("worksheets");
 });
 
+// ─── Complex Engineering Problems ────────────────────────────────────────────
+app.get("/complex-engineering", isAuthenticated, (req, res) => {
+    res.render("complex-engineering", { user: req.session.user });
+});
+
 // ─── (Keep existing report generation logic below) ────────────────────────────
 
 // ─── Escape raw text for Word XML ────────────────────────────────────────────
@@ -1409,6 +1414,252 @@ app.get("/report-queue", isAuthenticated, (req, res) => {
 });
 
 // /report-done route removed — download is automatic, no done page needed
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COMPLEX ENGINEERING PROBLEMS — Queue-based generation with Docxtemplater
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MAX_CEP_JOBS = 4;
+const CEP_TTL      = 600; // 10 min
+
+// ─── Enqueue CEP ─────────────────────────────────────────────────────────────
+app.post("/generate-cep", isAuthenticated, async (req, res) => {
+    const userId = req.session.user.studentId;
+    try {
+        // Don't double-queue
+        const existingRaw = await redis.get(`cep_result:${userId}`);
+        if (existingRaw) {
+            const existing = typeof existingRaw === "string" ? JSON.parse(existingRaw) : existingRaw;
+            if (existing.status === "waiting" || existing.status === "generating") {
+                return res.json({ queued: true, position: existing.position || 1 });
+            }
+        }
+
+        // Save form data to Redis
+        await redis.set(`cep_form:${userId}`, JSON.stringify(req.body), { ex: CEP_TTL });
+
+        await redis.lrem("cep_queue", 0, userId);
+        await redis.rpush("cep_queue", userId);
+
+        const queue    = await redis.lrange("cep_queue", 0, -1);
+        const position = queue.indexOf(userId) + 1;
+
+        await redis.set(
+            `cep_result:${userId}`,
+            JSON.stringify({ status: "waiting", position }),
+            { ex: CEP_TTL }
+        );
+
+        processNextCEP().catch(err => console.error("[CEP] boot error:", err));
+        return res.json({ queued: true, position });
+
+    } catch (err) {
+        console.error("[CEP] Enqueue error:", err);
+        return res.status(500).json({ error: "Failed to queue: " + err.message });
+    }
+});
+
+// ─── CEP Queue Worker ─────────────────────────────────────────────────────────
+async function processNextCEP() {
+    const lock = await redis.set("cep_lock", "1", { nx: true, ex: 15 });
+    if (!lock) return;
+
+    try {
+        let active = parseInt(await redis.get("cep_active") || "0", 10);
+        if (isNaN(active) || active < 0) { active = 0; await redis.set("cep_active", "0"); }
+
+        if (active >= MAX_CEP_JOBS) return;
+
+        const userId = await redis.lpop("cep_queue");
+        if (!userId) return;
+
+        await redis.lpush("cep_processing", userId);
+        await redis.incr("cep_active");
+        await redis.set(
+            `cep_result:${userId}`,
+            JSON.stringify({ status: "generating", startedAt: Date.now() }),
+            { ex: CEP_TTL }
+        );
+
+        const remaining = await redis.lrange("cep_queue", 0, -1);
+        for (let i = 0; i < remaining.length; i++) {
+            await redis.set(
+                `cep_result:${remaining[i]}`,
+                JSON.stringify({ status: "waiting", position: i + 1 }),
+                { ex: CEP_TTL }
+            );
+        }
+
+        console.log(`[CEP] Dispatching ${userId} | active=${active + 1}`);
+        runCEPJob(userId).catch(err => console.error(`[CEP] job error ${userId}:`, err));
+
+    } catch (err) {
+        console.error("[CEP] processNextCEP error:", err);
+    } finally {
+        await redis.del("cep_lock");
+    }
+}
+
+// ─── Run one CEP generation job ───────────────────────────────────────────────
+async function runCEPJob(userId) {
+    try {
+        const formRaw = await redis.get(`cep_form:${userId}`);
+        if (!formRaw) throw new Error("Form data missing for user: " + userId);
+        const form = typeof formRaw === "string" ? JSON.parse(formRaw) : formRaw;
+
+        const ps = form.problemStatement || "";
+
+        // Format date nicely
+        const rawDate  = form.date || new Date().toISOString().split("T")[0];
+        const dateObj  = new Date(rawDate);
+        const formattedDate = dateObj.toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+
+        // Single Gemini call — generate all sections as structured JSON
+        const prompt = `
+You are an expert engineering academic content generator.
+Analyse the following Complex Engineering Problem Statement and generate detailed content for a university project report.
+
+Problem Statement: "${ps}"
+
+Return ONLY a valid JSON object with these exact keys — no markdown fences, no extra text:
+
+{
+  "abstract": "An 8-line detailed summary of the problem, approach, and expected outcomes. Should read as a formal academic abstract.",
+  "introduction": "A 5-6 sentence introduction to the topic, its background, relevance, and importance in engineering.",
+  "overview": "A 4-5 sentence overview of the project scope, what it covers, and how it approaches the problem.",
+  "objectives": "List 5 specific objectives of this project as a numbered list (1. ... 2. ... 3. ... 4. ... 5. ...). Each objective should be one clear sentence.",
+  "prerequisites": "List exactly 4 prerequisite knowledge areas needed for this project (1. ... 2. ... 3. ... 4. ...). Each should name the subject and briefly explain why it is needed.",
+  "requirements": "List 5-6 technical and resource requirements for this project (hardware, software, datasets, tools, or skills). Format as a numbered list.",
+  "methodology": "Describe in 5-6 sentences the methodology and approach that will be used to solve this problem. Be specific to the domain.",
+  "workflow": "List exactly 5 workflow steps as: Step 1: ... Step 2: ... Step 3: ... Step 4: ... Step 5: ... Each step should be one sentence describing what is done at that stage.",
+  "content": "A detailed explanation (8-10 sentences) of the technical solution corresponding to the workflow steps. Include relevant techniques, algorithms, formulas, or design approaches specific to this problem.",
+  "result": "A 3-4 sentence description of the expected results and outcomes of solving this problem.",
+  "conclusion": "A 4-5 sentence conclusion summarising what was achieved, its significance, and what it demonstrates.",
+  "futureScope": "List 4-5 future scope items as a numbered list describing how this project can be extended or improved."
+}
+
+Rules:
+- Be specific and technical — this is for a university engineering report.
+- Do NOT use markdown formatting inside the JSON values.
+- Do NOT include bullet characters (•) or asterisks (*) in values.
+- Use plain numbered lists (1. 2. 3.) where lists are needed.
+- All values must be plain text strings.
+`;
+
+        const aiResult = await generateWithFallback(m => m.generateContent(prompt), true);
+        let aiText = aiResult.response.text()
+            .replace(/\`\`\`json/g, "").replace(/\`\`\`/g, "").trim();
+        const aiData = JSON.parse(aiText);
+
+        // Build Docxtemplater data — map form fields to template placeholders
+        const docData = {
+            name:        form.name        || "",
+            rollNumber:  form.rollNo      || "",
+            program:     form.program     || "",
+            semester:    form.semester    || "",
+            branch:      form.class       || "",   // "Class" field → {branch}
+            courseName:  form.courseTitle || "",
+            courseCode:  form.courseCode  || "",   
+            date:        formattedDate,
+            topic:       ps,
+            abstract:    aiData.abstract    || "",
+            introduction:aiData.introduction|| "",
+            overview:    aiData.overview    || "",
+            objectives:  aiData.objectives  || "",
+            prerequisites:aiData.prerequisites || "",
+            requirements:aiData.requirements|| "",
+            methodology: aiData.methodology || "",
+            workflow:    aiData.workflow    || "",
+            content:     aiData.content     || "",
+            result:      aiData.result      || "",
+            conclusion:  aiData.conclusion  || "",
+            futureScope: aiData.futureScope || "",
+        };
+
+        // Fill template
+        const templateBuf = fs.readFileSync(
+            path.join(__dirname, "assets", "ComplexEngineeringTemplate.docx"),
+            "binary"
+        );
+        const zip = new PizZip(templateBuf);
+        const doc = new Docxtemplater(zip, {
+            paragraphLoop: true,
+            linebreaks:    true,
+        });
+        doc.render(docData);
+        const buf = doc.getZip().generate({ type: "nodebuffer", compression: "DEFLATE" });
+
+        const safeName = (form.name || "Student").replace(/[^a-zA-Z0-9_]/g, "_");
+
+        await redis.set(
+            `cep_result:${userId}`,
+            JSON.stringify({
+                status:    "done",
+                fileName:  `${safeName}_CEP.docx`,
+                docBase64: buf.toString("base64")
+            }),
+            { ex: CEP_TTL }
+        );
+
+        console.log(`[CEP] Done for ${userId}`);
+
+    } catch (err) {
+        console.error(`[CEP] Failed for ${userId}:`, err.message);
+        await redis.set(
+            `cep_result:${userId}`,
+            JSON.stringify({ status: "error", message: err.message }),
+            { ex: 120 }
+        );
+    } finally {
+        const n = await redis.decr("cep_active");
+        if (n < 0) await redis.set("cep_active", "0");
+        await redis.lrem("cep_processing", 0, userId);
+        processNextCEP().catch(err => console.error("[CEP] next-job error:", err));
+    }
+}
+
+// ─── CEP Status Polling ───────────────────────────────────────────────────────
+app.get("/cep-status/:userId", async (req, res) => {
+    const { userId } = req.params;
+    try {
+        const raw = await redis.get(`cep_result:${userId}`);
+        if (!raw) return res.json({ status: "not_found" });
+        const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (data.status === "done") return res.json({ status: "done", fileName: data.fileName });
+        return res.json(data);
+    } catch (err) {
+        return res.status(500).json({ error: "Status check failed." });
+    }
+});
+
+// ─── CEP Download ─────────────────────────────────────────────────────────────
+app.get("/download-cep/:userId", async (req, res) => {
+    const { userId } = req.params;
+    try {
+        const raw = await redis.get(`cep_result:${userId}`);
+        if (!raw) return res.status(404).send("Document not found. Please generate again.");
+        const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (data.status !== "done") return res.status(400).send("Document not ready yet.");
+
+        const buf      = Buffer.from(data.docBase64, "base64");
+        const fileName = data.fileName || `${userId}_CEP.docx`;
+
+        res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        res.send(buf);
+
+        await redis.del(`cep_result:${userId}`);
+        await redis.del(`cep_form:${userId}`);
+    } catch (err) {
+        console.error("[CEP] Download error:", err);
+        res.status(500).send("Download failed: " + err.message);
+    }
+});
+
+// ─── CEP Queue Waiting Page ───────────────────────────────────────────────────
+app.get("/cep-queue", isAuthenticated, (req, res) => {
+    res.render("cep-queue", { user: req.session.user });
+});
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 8080;

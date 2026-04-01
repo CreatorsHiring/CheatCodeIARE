@@ -4,11 +4,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generate Report - CheatCodeIARE</title>
+    <title>Complex Engineering Problems - CheatCodeIARE</title>
     <link rel="stylesheet" href="/styles/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        .report-container {
+        .cep-container {
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -16,18 +16,18 @@
             background: rgba(255, 255, 255, 0.03);
             padding: 40px;
             border-radius: 15px;
-            border: 2px solid #ff00ff;
-            box-shadow: 0 0 15px rgba(255, 0, 255, 0.2);
+            border: 2px solid #ffa500;
+            box-shadow: 0 0 15px rgba(255, 165, 0, 0.2);
             backdrop-filter: blur(10px);
             max-width: 800px;
             width: 100%;
             margin: 20px;
         }
 
-        .report-title {
+        .cep-title {
             font-family: 'Orbitron', sans-serif;
             color: #fff;
-            text-shadow: 0 0 10px #ff00ff;
+            text-shadow: 0 0 10px #ffa500;
             margin-bottom: 30px;
             font-size: 2rem;
             text-align: center;
@@ -78,7 +78,7 @@
 
         .input-group label {
             display: block;
-            color: #ff00ff;
+            color: #ffa500;
             font-family: 'Orbitron', sans-serif;
             margin-bottom: 8px;
             font-size: 0.8rem;
@@ -167,8 +167,8 @@
     </div>
 
     <div class="content">
-        <div class="report-container">
-            <h1 class="report-title">REPORT GENERATOR</h1>
+        <div class="cep-container">
+            <h1 class="cep-title">COMPLEX ENGINEERING PROBLEMS</h1>
 
             <div class="user-info">
                 <div class="info-box">Name: <%= user.name %>
@@ -177,7 +177,7 @@
                 </div>
             </div>
 
-            <form id="reportForm" action="/generate-report" method="POST">
+            <form id="cepForm" action="/generate-cep" method="POST">
 
                 <div class="section-title">Student / Course Details</div>
                 <div class="input-grid">
@@ -214,65 +214,35 @@
                         <input type="text" name="courseCode" required>
                     </div>
                     <div class="input-group full-width">
-                        <label>AAT No</label>
-                        <input type="text" name="aatNo" placeholder="e.g. 1" required>
+                        <label>Date</label>
+                        <input type="date" name="date" id="dateInput" required>
                     </div>
                 </div>
 
-                <div class="section-title">Questions</div>
-                <div class="input-group">
-                    <label>Question 1</label>
-                    <textarea name="question1" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 2</label>
-                    <textarea name="question2" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 3</label>
-                    <textarea name="question3" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 4</label>
-                    <textarea name="question4" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 5</label>
-                    <textarea name="question5" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 6</label>
-                    <textarea name="question6" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 7</label>
-                    <textarea name="question7" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 8</label>
-                    <textarea name="question8" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 9</label>
-                    <textarea name="question9" rows="2" required></textarea>
-                </div>
-                <div class="input-group">
-                    <label>Question 10</label>
-                    <textarea name="question10" rows="2" required></textarea>
+                <div class="section-title">Problem Statement</div>
+                <div class="input-group full-width">
+                    <label>Complex Engineering Problem Description</label>
+                    <textarea name="problemStatement" rows="6" required placeholder="Describe the complex engineering problem in detail..."></textarea>
                 </div>
 
                 <button type="submit" class="generate-btn">
-                    <i class="fa-solid fa-file-word"></i> GENERATE REPORT
+                    <i class="fa-solid fa-cogs"></i> GENERATE SOLUTION
                 </button>
                 <div id="loading" class="loading">
-                    Generating Academic Report... <i class="fa-solid fa-spinner fa-spin"></i>
+                    Analyzing Engineering Problem... <i class="fa-solid fa-spinner fa-spin"></i>
                 </div>
             </form>
         </div>
     </div>
 
     <script>
-        document.getElementById('reportForm').addEventListener('submit', async function (e) {
+        // Set today's date as default
+        document.addEventListener('DOMContentLoaded', function() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('dateInput').value = today;
+        });
+
+        document.getElementById('cepForm').addEventListener('submit', async function (e) {
             e.preventDefault();
 
             const btn     = document.querySelector('.generate-btn');
@@ -287,7 +257,7 @@
             const body = new URLSearchParams(new FormData(this)).toString();
 
             try {
-                const res  = await fetch('/generate-report', {
+                const res  = await fetch('/generate-cep', {
                     method:  'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body
@@ -295,7 +265,7 @@
                 const data = await res.json();
 
                 if (data.queued) {
-                    window.location.href = '/report-queue';
+                    window.location.href = '/cep-queue';
                 } else {
                     loading.innerHTML = '&#10060; ' + (data.error || 'Something went wrong.');
                     loading.style.color = '#ff4444';
