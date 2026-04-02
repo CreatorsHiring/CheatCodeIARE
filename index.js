@@ -582,6 +582,81 @@ async function recoverStuckJobs() {
     }
 }
 
+async function recoverStuckReports() {
+    const throttle = await redis.set("report_recovery_lock", "1", { nx: true, ex: 60 });
+    if (!throttle) return;
+
+    try {
+        let freedAny = false; // <-- ADD THIS
+
+        const processing = await redis.lrange("report_processing", 0, -1);
+        const STUCK_MS = 8 * 60 * 1000; // 8 minutes
+
+        for (const userId of processing) {
+            const resultRaw = await redis.get(`report_result:${userId}`);
+
+            if (!resultRaw) {
+                console.warn(`[ReportRecovery] Missing result for ${userId}, freeing slot`);
+                await redis.lrem("report_processing", 0, userId);
+
+                const n = await redis.decr("report_active");
+                if (n < 0) await redis.set("report_active", "0");
+
+                const pos = await redis.lpos("report_queue", userId);
+                if (pos === null) await redis.rpush("report_queue", userId);
+
+                await redis.set(
+                    `report_result:${userId}`,
+                    JSON.stringify({ status: "waiting", position: 99 }),
+                    { ex: REPORT_TTL }
+                );
+
+                freedAny = true; // <-- ADD THIS
+                continue;
+            }
+
+            const result = typeof resultRaw === "string" ? JSON.parse(resultRaw) : resultRaw;
+
+            if (result.status === "generating") {
+                const age = Date.now() - (result.startedAt || 0);
+
+                if (!result.startedAt || age > STUCK_MS) {
+                    console.warn(`[ReportRecovery] Stuck report for ${userId}, re-queuing`);
+
+                    await redis.lrem("report_processing", 0, userId);
+
+                    const n = await redis.decr("report_active");
+                    if (n < 0) await redis.set("report_active", "0");
+
+                    const pos = await redis.lpos("report_queue", userId);
+                    if (pos === null) await redis.rpush("report_queue", userId);
+
+                    await redis.set(
+                        `report_result:${userId}`,
+                        JSON.stringify({ status: "waiting", position: 99 }),
+                        { ex: REPORT_TTL }
+                    );
+
+                    freedAny = true; // <-- ADD THIS
+                }
+            }
+        }
+
+        await refreshReportQueuePositions();
+
+        //  IMPORTANT: restart queue if slots were freed
+        if (freedAny) {
+            console.log("[ReportRecovery] Freed stuck slots, restarting queue...");
+            processNextReport().catch(err =>
+                console.error("[ReportRecovery] Failed to restart queue:", err)
+            );
+        }
+
+    } catch (err) {
+        console.error("[ReportRecovery] error:", err);
+    }
+}
+
 // ─── Heartbeat: tells server user is still on queue page ──────────────────────
 app.post("/heartbeat/:userId", async (req,res)=>{
 
@@ -1212,6 +1287,18 @@ ${numberedQuestions}
 const MAX_REPORT_JOBS  = 4;
 const REPORT_TTL       = 600; // 10 min
 
+async function refreshReportQueuePositions() {
+    const queue = await redis.lrange("report_queue", 0, -1);
+
+    for (let i = 0; i < queue.length; i++) {
+        await redis.set(
+            `report_result:${queue[i]}`,
+            JSON.stringify({ status: "waiting", position: i + 1 }),
+            { ex: REPORT_TTL }
+        );
+    }
+}
+
 // ─── Enqueue Report ───────────────────────────────────────────────────────────
 app.post("/generate-report", isAuthenticated, async (req, res) => {
     const userId = req.session.user.studentId;
@@ -1282,14 +1369,7 @@ async function processNextReport() {
         );
 
         // Update positions for remaining waiters
-        const remaining = await redis.lrange("report_queue", 0, -1);
-        for (let i = 0; i < remaining.length; i++) {
-            await redis.set(
-                `report_result:${remaining[i]}`,
-                JSON.stringify({ status: "waiting", position: i + 1 }),
-                { ex: REPORT_TTL }
-            );
-        }
+        await refreshReportQueuePositions();
 
         console.log(`[ReportQueue] Dispatching ${userId} | active=${active + 1}`);
         runReportJob(userId).catch(err => console.error(`[ReportQueue] job error ${userId}:`, err));
@@ -1358,8 +1438,12 @@ async function runReportJob(userId) {
     } finally {
         const n = await redis.decr("report_active");
         if (n < 0) await redis.set("report_active", "0");
+
         await redis.lrem("report_processing", 0, userId);
-        processNextReport().catch(err => console.error("[ReportQueue] next-job error:", err));
+
+        processNextReport().catch(err =>
+            console.error("[ReportQueue] Failed to trigger next job:", err)
+        );
     }
 }
 
@@ -1367,6 +1451,7 @@ async function runReportJob(userId) {
 app.get("/report-status/:userId", async (req, res) => {
     const { userId } = req.params;
     try {
+        recoverStuckReports().catch(console.error);
         const raw = await redis.get(`report_result:${userId}`);
         if (!raw) return res.json({ status: "not_found" });
         const data = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -1551,29 +1636,43 @@ Rules:
             .replace(/\`\`\`json/g, "").replace(/\`\`\`/g, "").trim();
         const aiData = JSON.parse(aiText);
 
-        // Build Docxtemplater data — map form fields to template placeholders
+        // Build Docxtemplater data — every key matches a {placeholder} in the template exactly
+        // Template placeholders confirmed: {name} {rollNumber} {program} {semester}
+        // {branch} {class} {subject} {courseCode} {couseCode} {date} {topic}
+        // {lecturerName} {hodName}
+        // {abstract} {introduction} {overview} {objectives} {prerequisites}
+        // {requirements} {methodology} {workflow} {content} {results} {conclusion} {futureScope}
         const docData = {
-            name:        form.name        || "",
-            rollNumber:  form.rollNo      || "",
-            program:     form.program     || "",
-            semester:    form.semester    || "",
-            branch:      form.class       || "",   // "Class" field → {branch}
-            courseName:  form.courseTitle || "",
-            courseCode:  form.courseCode  || "",   
-            date:        formattedDate,
-            topic:       ps,
-            abstract:    aiData.abstract    || "",
-            introduction:aiData.introduction|| "",
-            overview:    aiData.overview    || "",
-            objectives:  aiData.objectives  || "",
-            prerequisites:aiData.prerequisites || "",
-            requirements:aiData.requirements|| "",
-            methodology: aiData.methodology || "",
-            workflow:    aiData.workflow    || "",
-            content:     aiData.content     || "",
-            result:      aiData.result      || "",
-            conclusion:  aiData.conclusion  || "",
-            futureScope: aiData.futureScope || "",
+            // Student details
+            name:         form.name         || "",
+            rollNumber:   form.rollNo        || "",
+            program:      form.program       || "",
+            semester:     form.semester      || "",
+            branch:       form.class         || "",  // {branch} — used in paragraphs
+            class:        form.class         || "",  // {class}  — used in tables
+            subject:      form.courseTitle   || "",  // {subject} — used in tables
+            courseName:   form.courseTitle   || "",  // {courseName} — fallback
+            courseCode:   form.courseCode    || "",  // {courseCode}
+            couseCode:    form.courseCode    || "",  // {couseCode} — template typo, keep both
+            date:         formattedDate,
+            topic:        ps,
+            // Faculty
+            lecturerName: form.lecturerName  || "",
+            hodName:      form.hodName       || "",
+            // AI-generated content
+            abstract:     aiData.abstract       || "",
+            introduction: aiData.introduction   || "",
+            overview:     aiData.overview       || "",
+            objectives:   aiData.objectives     || "",
+            prerequisites:aiData.prerequisites  || "",
+            requirements: aiData.requirements   || "",
+            methodology:  aiData.methodology    || "",
+            workflow:     aiData.workflow       || "",
+            content:      aiData.content        || "",
+            results:      aiData.result         || "",  // template uses {results} (plural)
+            result:       aiData.result         || "",  // keep singular too for safety
+            conclusion:   aiData.conclusion     || "",
+            futureScope:  aiData.futureScope    || "",
         };
 
         // Fill template
