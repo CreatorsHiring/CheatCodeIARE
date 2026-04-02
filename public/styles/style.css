@@ -418,3 +418,20 @@ footer {
         font-size: 0.9rem;
     }
 }
+
+.ad-wrapper {
+    width: 100%;
+    margin-top: 28px;
+    padding-top: 20px;
+    border-top: 1px solid rgba(255, 0, 255, 0.2);
+    text-align: center;
+}
+
+.ad-label {
+    font-size: 0.75rem;
+    color: #777;
+    margin-bottom: 10px;
+    font-family: 'Orbitron', sans-serif;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
