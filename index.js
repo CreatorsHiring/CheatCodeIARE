@@ -587,7 +587,7 @@ async function recoverStuckReports() {
     if (!throttle) return;
 
     try {
-        let freedAny = false; // <-- ADD THIS
+        let freedAny = false; 
 
         const processing = await redis.lrange("report_processing", 0, -1);
         const STUCK_MS = 8 * 60 * 1000; // 8 minutes

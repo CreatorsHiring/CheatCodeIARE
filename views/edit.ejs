@@ -264,6 +264,33 @@
             .left-panel { flex: none; height: 50vh; border-right: none; border-bottom: 2px solid #00f3ff; }
             .right-panel { height: 50vh; }
         }
+
+        @media (max-width: 600px) {
+            /* On small phones: hide left panel (chatbot disabled anyway),
+               give the full screen to the slide preview */
+            .container {
+                flex-direction: column;
+                padding-top: 56px; /* shorter header on mobile */
+            }
+            .left-panel {
+                display: none !important;
+            }
+            .right-panel {
+                height: calc(100vh - 56px);
+            }
+            /* Download button: full-width, easier to tap */
+            .download-wrapper {
+                bottom: 12px;
+                right: 12px;
+                left: 12px;
+            }
+            .download-btn {
+                width: 100%;
+                justify-content: center;
+                font-size: 0.9rem;
+                padding: 14px 20px;
+            }
+        }
     </style>
 </head>
 
