@@ -3,6 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        (function () {
+            const theme = localStorage.getItem('cheatcode-theme');
+            const normalized = theme === 'light' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = normalized;
+            document.documentElement.style.colorScheme = normalized;
+        })();
+    </script>
     <title>Generating Report - CheatCodeIARE</title>
     <link rel="stylesheet" href="/styles/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
@@ -185,9 +193,56 @@
                 font-size: 0.75rem;
             }
         }
+
+        html[data-theme="light"] body {
+            background: var(--content-bg);
+            color: var(--text);
+        }
+
+        html[data-theme="light"] .queue-card {
+            background: rgba(255, 255, 255, 0.82);
+            box-shadow: 0 22px 48px rgba(18, 32, 51, 0.14);
+        }
+
+        html[data-theme="light"] .queue-title {
+            color: var(--accent-magenta);
+            text-shadow: none;
+        }
+
+        html[data-theme="light"] .queue-subtitle,
+        html[data-theme="light"] .position-text,
+        html[data-theme="light"] .poll-note {
+            color: var(--muted-text);
+        }
+
+        html[data-theme="light"] .status-box {
+            background: var(--surface-panel);
+            border-color: var(--surface-border);
+        }
+
+        html[data-theme="light"] .status-label {
+            color: var(--soft-text);
+        }
+
+        html[data-theme="light"] .dot {
+            background: #cfd8e5;
+        }
+
+        html[data-theme="light"] .spinner {
+            border-color: #d8e2ee;
+            border-top-color: var(--accent-magenta);
+        }
+
+        html[data-theme="light"] .retry-btn:hover {
+            color: #ffffff;
+        }
     </style>
 </head>
 <body>
+    <button type="button" class="theme-toggle theme-toggle-floating" data-theme-toggle>
+        <i class="theme-toggle-icon fa-solid fa-sun"></i>
+        <span class="theme-toggle-label">Light Mode</span>
+    </button>
 
     <div class="queue-card">
         <div class="queue-icon" id="queueIcon">📄</div>
@@ -318,6 +373,7 @@
         poll();
         pollTimer = setInterval(poll, POLL_MS);
     </script>
+    <script defer src="/js/theme.js"></script>
     <script src="https://pl29036010.profitablecpmratenetwork.com/66/6b/33/666b337c5a9fa74ac766be2bec6852a4.js"></script>
 
 </body>
