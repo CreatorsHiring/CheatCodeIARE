@@ -143,12 +143,44 @@
         }
 
         @media (max-width: 600px) {
+            .cep-container {
+                padding: 24px 14px;
+                margin: 10px;
+                border-radius: 12px;
+            }
+            .cep-title {
+                font-size: 1.3rem;
+                margin-bottom: 16px;
+            }
+            .user-info {
+                flex-direction: column;
+                gap: 10px;
+            }
+            .info-box {
+                font-size: 0.78rem;
+                padding: 8px 12px;
+            }
+            .section-title {
+                font-size: 1rem;
+            }
             .input-grid {
                 grid-template-columns: 1fr;
+                gap: 0;
             }
-
             .full-width {
                 grid-column: span 1;
+            }
+            .input-group label {
+                font-size: 0.75rem;
+            }
+            .input-group input,
+            .input-group textarea {
+                font-size: 0.95rem;
+                padding: 13px 10px;
+            }
+            .generate-btn {
+                padding: 16px;
+                font-size: 1rem;
             }
         }
     </style>
