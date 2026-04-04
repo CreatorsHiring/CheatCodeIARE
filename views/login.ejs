@@ -4,6 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        (function () {
+            const theme = localStorage.getItem('cheatcode-theme');
+            const normalized = theme === 'light' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = normalized;
+            document.documentElement.style.colorScheme = normalized;
+        })();
+    </script>
     <title>Login - CheatCodeIARE</title>
     <link rel="stylesheet" href="/styles/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -128,10 +136,51 @@
                 margin-top: 8px;
             }
         }
+
+        html[data-theme="light"] .login-container {
+            background: rgba(255, 255, 255, 0.78);
+            border-color: var(--accent-cyan);
+            box-shadow: 0 22px 48px rgba(18, 32, 51, 0.14);
+        }
+
+        html[data-theme="light"] .login-title {
+            color: var(--text);
+            text-shadow: 0 0 12px rgba(10, 166, 216, 0.2);
+        }
+
+        html[data-theme="light"] .input-group label {
+            color: var(--accent-cyan);
+        }
+
+        html[data-theme="light"] .input-group input {
+            background: var(--surface-input);
+            border-color: var(--surface-border-strong);
+            color: var(--field-text);
+        }
+
+        html[data-theme="light"] .input-group input::placeholder {
+            color: var(--placeholder-text);
+        }
+
+        html[data-theme="light"] .signup-link {
+            color: var(--soft-text);
+        }
+
+        html[data-theme="light"] .signup-link a {
+            color: var(--accent-magenta);
+        }
+
+        html[data-theme="light"] .login-btn:hover {
+            color: var(--bg);
+        }
     </style>
 </head>
 
 <body>
+    <button type="button" class="theme-toggle theme-toggle-floating" data-theme-toggle>
+        <i class="theme-toggle-icon fa-solid fa-sun"></i>
+        <span class="theme-toggle-label">Light Mode</span>
+    </button>
     <div class="content">
         <div class="login-container">
             <h1 class="login-title">LOGIN</h1>
@@ -165,6 +214,7 @@
     <script>
         window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments) };
     </script>
+    <script defer src="/js/theme.js"></script>
     <script defer src="/_vercel/insights/script.js"></script>
 </body>
 

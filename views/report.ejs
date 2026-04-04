@@ -4,6 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        (function () {
+            const theme = localStorage.getItem('cheatcode-theme');
+            const normalized = theme === 'light' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = normalized;
+            document.documentElement.style.colorScheme = normalized;
+        })();
+    </script>
     <title>Generate Report - CheatCodeIARE</title>
     <link rel="stylesheet" href="/styles/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -183,6 +191,51 @@
                 font-size: 1rem;
             }
         }
+
+        html[data-theme="light"] .report-container {
+            background: rgba(255, 255, 255, 0.76);
+            box-shadow: 0 22px 48px rgba(18, 32, 51, 0.14);
+        }
+
+        html[data-theme="light"] .report-title {
+            color: var(--text);
+            text-shadow: 0 0 10px rgba(204, 46, 194, 0.18);
+        }
+
+        html[data-theme="light"] .info-box {
+            background: rgba(255, 255, 255, 0.9);
+            border-color: var(--accent-lime);
+            color: var(--accent-lime);
+        }
+
+        html[data-theme="light"] .section-title {
+            color: var(--accent-lime);
+            border-bottom-color: rgba(39, 141, 37, 0.35);
+        }
+
+        html[data-theme="light"] .input-group label {
+            color: var(--accent-magenta);
+        }
+
+        html[data-theme="light"] .input-group input,
+        html[data-theme="light"] .input-group textarea {
+            background: var(--surface-input);
+            border-color: var(--surface-border-strong);
+            color: var(--field-text);
+        }
+
+        html[data-theme="light"] .input-group input::placeholder,
+        html[data-theme="light"] .input-group textarea::placeholder {
+            color: var(--placeholder-text);
+        }
+
+        html[data-theme="light"] .generate-btn:hover {
+            color: var(--bg);
+        }
+
+        html[data-theme="light"] .loading {
+            color: var(--text);
+        }
     </style>
 </head>
 
@@ -194,6 +247,10 @@
             <p class="title">CheatCodeIARE</p>
         </div>
         <div class="headerRight">
+            <button type="button" class="theme-toggle" data-theme-toggle>
+                <i class="theme-toggle-icon fa-solid fa-sun"></i>
+                <span class="theme-toggle-label">Light Mode</span>
+            </button>
             <button class="signupbtn" onclick="window.location.href='/'">HOME</button>
         </div>
     </div>
@@ -347,6 +404,7 @@
             }
         });
     </script>
+    <script defer src="/js/theme.js"></script>
 </body>
 
 </html>

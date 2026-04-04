@@ -4,6 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        (function () {
+            const theme = localStorage.getItem('cheatcode-theme');
+            const normalized = theme === 'light' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = normalized;
+            document.documentElement.style.colorScheme = normalized;
+        })();
+    </script>
     <title>Edit PPT - CheatCodeIARE</title>
     <link rel="stylesheet" href="/styles/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -291,6 +299,75 @@
                 padding: 14px 20px;
             }
         }
+
+        html[data-theme="light"] body {
+            background-color: var(--bg);
+            color: var(--text);
+        }
+
+        html[data-theme="light"] .left-panel {
+            background: rgba(255, 255, 255, 0.88);
+            border-right-color: var(--accent-cyan);
+            box-shadow: 6px 0 18px rgba(18, 32, 51, 0.08);
+        }
+
+        html[data-theme="light"] .chat-header,
+        html[data-theme="light"] .chat-input-area {
+            background: rgba(248, 251, 255, 0.96);
+            border-color: var(--surface-border);
+        }
+
+        html[data-theme="light"] .chat-header {
+            color: var(--accent-cyan);
+        }
+
+        html[data-theme="light"] .chat-tabs {
+            border-bottom-color: var(--surface-border);
+        }
+
+        html[data-theme="light"] .chat-tab {
+            background: rgba(243, 247, 251, 0.95);
+            color: var(--soft-text);
+        }
+
+        html[data-theme="light"] .chat-tab.active,
+        html[data-theme="light"] .chat-tab:hover:not(.active) {
+            background: rgba(255, 255, 255, 0.96);
+            color: var(--accent-cyan);
+            border-bottom-color: var(--accent-cyan);
+        }
+
+        html[data-theme="light"] .msg-user {
+            color: #ffffff;
+        }
+
+        html[data-theme="light"] .msg-bot {
+            background: rgba(248, 251, 255, 0.96);
+            color: var(--text);
+            border-color: var(--surface-border);
+        }
+
+        html[data-theme="light"] .chat-input {
+            background: var(--surface-input-solid);
+            border-color: var(--surface-border-strong);
+            color: var(--field-text);
+        }
+
+        html[data-theme="light"] .chat-input::placeholder {
+            color: var(--placeholder-text);
+        }
+
+        html[data-theme="light"] .mode-hint {
+            color: var(--soft-text);
+        }
+
+        html[data-theme="light"] .right-panel {
+            background: #dce7f4;
+        }
+
+        html[data-theme="light"] .download-btn:hover {
+            color: var(--bg);
+        }
     </style>
 </head>
 
@@ -302,6 +379,10 @@
             <p class="title">CheatCodeIARE</p>
         </div>
         <div class="headerRight">
+            <button type="button" class="theme-toggle" data-theme-toggle>
+                <i class="theme-toggle-icon fa-solid fa-sun"></i>
+                <span class="theme-toggle-label">Light Mode</span>
+            </button>
             <button class="signupbtn" onclick="window.location.href='/ppt'">NEW PPT</button>
         </div>
     </div>
@@ -636,6 +717,7 @@
 
     })();
     </script>
+    <script defer src="/js/theme.js"></script>
 
     <!-- Vercel Web Analytics -->
     <script>

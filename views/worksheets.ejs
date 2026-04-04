@@ -4,6 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        (function () {
+            const theme = localStorage.getItem('cheatcode-theme');
+            const normalized = theme === 'light' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = normalized;
+            document.documentElement.style.colorScheme = normalized;
+        })();
+    </script>
     <title>Coming Soon - CheatCodeIARE</title>
     <link rel="stylesheet" href="/styles/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -144,6 +152,25 @@
                 text-align: center;
             }
         }
+
+        html[data-theme="light"] .coming-soon-container {
+            background: rgba(255, 255, 255, 0.78);
+            box-shadow: 0 22px 48px rgba(18, 32, 51, 0.14);
+        }
+
+        html[data-theme="light"] .coming-soon-title {
+            color: var(--text);
+            text-shadow: 0 0 10px rgba(39, 141, 37, 0.16);
+        }
+
+        html[data-theme="light"] .coming-soon-message {
+            color: var(--muted-text);
+        }
+
+        html[data-theme="light"] .notify-btn:hover,
+        html[data-theme="light"] .back-home-btn:hover {
+            color: var(--bg);
+        }
     </style>
 </head>
 
@@ -155,6 +182,10 @@
             <p class="title">CheatCodeIARE</p>
         </div>
         <div class="headerRight">
+            <button type="button" class="theme-toggle" data-theme-toggle>
+                <i class="theme-toggle-icon fa-solid fa-sun"></i>
+                <span class="theme-toggle-label">Light Mode</span>
+            </button>
             <button class="signupbtn" onclick="window.location.href='/ppt'">NEW PPT</button>
         </div>
     </div>
@@ -188,6 +219,7 @@
     <script>
         window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments) };
     </script>
+    <script defer src="/js/theme.js"></script>
     <script defer src="/_vercel/insights/script.js"></script>
 </body>
 
