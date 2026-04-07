@@ -4,6 +4,7 @@
     "@google/generative-ai": "^0.24.1",
     "@upstash/redis": "^1.37.0",
     "@vercel/analytics": "^1.6.1",
+    "cookie-parser": "^1.4.7",
     "docxtemplater": "^3.67.6",
     "dotenv": "^17.2.3",
     "ejs": "^3.1.10",

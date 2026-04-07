@@ -185,6 +185,7 @@
         <div class="login-container">
             <h1 class="login-title">LOGIN</h1>
             <form action="/login" method="POST">
+                <input type="hidden" name="returnTo" value="<%= typeof returnTo === 'string' ? returnTo : '/' %>">
                 <div class="input-group">
                     <label>Student Name</label>
                     <input type="text" name="name" required placeholder="Enter your name">
