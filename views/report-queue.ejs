@@ -300,8 +300,24 @@
 
         async function poll() {
             try {
-                const res  = await fetch(`/report-status/${userId}?t=${Date.now()}`);
+                const res  = await fetch(`/report-status/${userId}?t=${Date.now()}`, {
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (res.redirected) {
+                    window.location.href = res.url;
+                    return;
+                }
+
+                const contentType = res.headers.get('content-type') || '';
+                if (!contentType.includes('application/json')) {
+                    throw new Error('Session expired. Please log in again.');
+                }
+
                 const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.error || 'Status check failed.');
+                }
 
                 if (data.status === "waiting") {
                     statusEl.className   = "status-value waiting";
@@ -366,7 +382,17 @@
                 }
 
             } catch (e) {
+                clearInterval(dotTimer);
+                clearInterval(pollTimer);
                 console.error("Poll error:", e);
+                statusEl.className   = "status-value error";
+                statusEl.textContent = "ERROR";
+                icon.textContent     = "âŒ";
+                posText.style.display  = "none";
+                spinner.style.display  = "none";
+                pollNote.style.display = "none";
+                errorMsg.textContent   = e.message || "Status check failed.";
+                errorRetry.style.display = "block";
             }
         }
 
