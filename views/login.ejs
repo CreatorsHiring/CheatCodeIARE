@@ -183,7 +183,7 @@
     </button>
     <div class="content">
         <div class="login-container">
-            <h1 class="login-title">LOGIN</h1>
+            <h1 class="login-title">ENTER DETAILS</h1>
             <form action="/login" method="POST">
                 <input type="hidden" name="returnTo" value="<%= typeof returnTo === 'string' ? returnTo : '/' %>">
                 <div class="input-group">
@@ -197,6 +197,9 @@
                 <div class="input-group">
                     <label>Password</label>
                     <input type="password" name="password" required placeholder="password">
+                    <p style="font-family: 'Poppins', sans-serif;font-size: 0.80rem;">
+                        We believe in your privacy and will never share your information.
+                    </p>
                 </div>
                 <button type="submit" class="login-btn">ENTER SYSTEM</button>
             </form>
