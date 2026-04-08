@@ -426,6 +426,16 @@ button:hover {
     overflow-wrap: break-word;
 }
 
+/* Mobile question count badge — hidden on desktop */
+.mobile-qcount {
+    display: none;
+    font-size: 0.7rem;
+    color: inherit;
+    opacity: 0.8;
+    font-weight: normal;
+    margin-left: 4px;
+}
+
 .card-cyan    h2 { text-shadow: 0 0 6px rgba(0, 243, 255, 0.6); }
 .card-magenta h2 { text-shadow: 0 0 6px rgba(255, 0, 255, 0.6); }
 .card-lime    h2 { text-shadow: 0 0 6px rgba(57, 255, 20, 0.6); }
@@ -580,6 +590,13 @@ footer {
         text-align: left;
         padding: 0;
         display: none; /* Hide descriptions on mobile for cleaner look */
+    }
+
+    /* Show compact question count beside title on mobile */
+    .mobile-qcount {
+        display: inline;
+        font-size: 0.7rem;
+        opacity: 0.9;
     }
 
     .neon-text-bottom {
@@ -746,6 +763,11 @@ html[data-theme="light"] .card-purple h2 {
 
 html[data-theme="light"] .card p {
     color: #4a5568;
+    opacity: 1;
+}
+
+html[data-theme="light"] .mobile-qcount {
+    color: #64748b;
     opacity: 1;
 }
 
