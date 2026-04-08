@@ -1783,32 +1783,49 @@ Problem Statement: "${ps}"
 Return ONLY a valid JSON object with these exact keys — no markdown fences, no extra text:
 
 {
-  "abstract": "An 8-line detailed summary of the problem, approach, and expected outcomes. Should read as a formal academic abstract.",
-  "introduction": "A 5-6 sentence introduction to the topic, its background, relevance, and importance in engineering.",
-  "overview": "A 4-5 sentence overview of the project scope, what it covers, and how it approaches the problem.",
-  "objectives": "List 5 specific objectives of this project as a numbered list (1. ... 2. ... 3. ... 4. ... 5. ...). Each objective should be one clear sentence.",
-  "prerequisites": "List exactly 4 prerequisite knowledge areas needed for this project (1. ... 2. ... 3. ... 4. ...). Each should name the subject and briefly explain why it is needed.",
-  "requirements": "List 5-6 technical and resource requirements for this project (hardware, software, datasets, tools, or skills). Format as a numbered list.",
-  "methodology": "Describe in 5-6 sentences the methodology and approach that will be used to solve this problem. Be specific to the domain.",
-  "workflow": "List exactly 5 workflow steps as: Step 1: ... Step 2: ... Step 3: ... Step 4: ... Step 5: ... Each step should be one sentence describing what is done at that stage.",
-  "content": "A detailed explanation (8-10 sentences) of the technical solution corresponding to the workflow steps. Include relevant techniques, algorithms, formulas, or design approaches specific to this problem.",
-  "result": "A 3-4 sentence description of the expected results and outcomes of solving this problem.",
-  "conclusion": "A 4-5 sentence conclusion summarising what was achieved, its significance, and what it demonstrates.",
-  "futureScope": "List 4-5 future scope items as a numbered list describing how this project can be extended or improved."
+  "abstract": "Write 6-8 sentences as a formal academic abstract covering: problem context, approach, techniques used, and expected outcomes. Separate each sentence with \n.",
+  "introduction": "Write 5-6 sentences introducing the topic, its background, real-world relevance, and engineering importance. Separate each sentence with \n.",
+  "overview": "Write 4-5 sentences giving an overview of the project scope and approach. Separate each sentence with \n.",
+  "objectives": "List exactly 5 objectives. Format as: 1. <sentence>\n2. <sentence>\n3. <sentence>\n4. <sentence>\n5. <sentence>",
+  "prerequisites": "List exactly 4 prerequisite knowledge areas. Format as: 1. <subject — why needed>\n2. <subject — why needed>\n3. <subject — why needed>\n4. <subject — why needed>",
+  "requirements": "List 5-6 technical/resource requirements. Format as: 1. <requirement>\n2. <requirement>\n3. <requirement>\n4. <requirement>\n5. <requirement>",
+  "methodology": "Write 5-6 sentences describing the methodology and approach specific to this domain. Separate each sentence with \n.",
+  "workflow": "List exactly 5 workflow steps. Format as: Step 1: <sentence>\nStep 2: <sentence>\nStep 3: <sentence>\nStep 4: <sentence>\nStep 5: <sentence>",
+  "content": "Write a detailed technical explanation (8-10 sentences) of the solution corresponding to the workflow steps. Include techniques, algorithms, or design approaches. Separate each sentence with \n.",
+  "result": "Write 3-4 sentences describing the expected results and outcomes. Separate each sentence with \n.",
+  "conclusion": "Write 4-5 sentences summarising what was achieved and its significance. Separate each sentence with \n.",
+  "futureScope": "List 4-5 future scope items. Format as: 1. <item>\n2. <item>\n3. <item>\n4. <item>"
 }
 
-Rules:
+CRITICAL RULES:
+- Use literal \n (backslash-n) inside the JSON string values to separate items and sentences.
+- Do NOT use markdown (no **, no ##, no bullets •).
+- Do NOT use actual newlines inside JSON strings — use \n only.
+- All values must be plain text strings with \n separators.
 - Be specific and technical — this is for a university engineering report.
-- Do NOT use markdown formatting inside the JSON values.
-- Do NOT include bullet characters (•) or asterisks (*) in values.
-- Use plain numbered lists (1. 2. 3.) where lists are needed.
-- All values must be plain text strings.
 `;
 
         const aiResult = await generateWithFallback(m => m.generateContent(prompt), true);
         let aiText = aiResult.response.text()
             .replace(/\`\`\`json/g, "").replace(/\`\`\`/g, "").trim();
         const aiData = JSON.parse(aiText);
+
+        // ── Post-process AI text: ensure numbered items are on their own lines ──────
+        // Handles cases where the AI returns "1. Foo 2. Bar" instead of "1. Foo\n2. Bar"
+        function ensureLineBreaks(text) {
+            if (!text) return "";
+            // Already has newlines — just clean up
+            if (text.includes("\n")) {
+                return text
+                    .replace(/\n+/g, "\n")   // collapse multiple newlines
+                    .trim();
+            }
+            // Insert newline before numbered items: "1." "2." "3." etc
+            text = text.replace(/(?<=[\w,.!?])\s+(?=\d+\.\s)/g, "\n");
+            // Insert newline before "Step N:"
+            text = text.replace(/(?<=[\w,.!?])\s+(?=Step\s+\d+:)/gi, "\n");
+            return text.trim();
+        }
 
         // Build Docxtemplater data — every key matches a {placeholder} in the template exactly
         // Template placeholders confirmed: {name} {rollNumber} {program} {semester}
@@ -1833,20 +1850,21 @@ Rules:
             // Faculty
             lecturerName: form.lecturerName  || "",
             hodName:      form.hodName       || "",
-            // AI-generated content
-            abstract:     aiData.abstract       || "",
-            introduction: aiData.introduction   || "",
-            overview:     aiData.overview       || "",
-            objectives:   aiData.objectives     || "",
-            prerequisites:aiData.prerequisites  || "",
-            requirements: aiData.requirements   || "",
-            methodology:  aiData.methodology    || "",
-            workflow:     aiData.workflow       || "",
-            content:      aiData.content        || "",
-            results:      aiData.result         || "",  // template uses {results} (plural)
-            result:       aiData.result         || "",  // keep singular too for safety
-            conclusion:   aiData.conclusion     || "",
-            futureScope:  aiData.futureScope    || "",
+            // AI-generated content — run through ensureLineBreaks so every
+            // numbered item / sentence gets its own line in the Word doc
+            abstract:      ensureLineBreaks(aiData.abstract      || ""),
+            introduction:  ensureLineBreaks(aiData.introduction  || ""),
+            overview:      ensureLineBreaks(aiData.overview      || ""),
+            objectives:    ensureLineBreaks(aiData.objectives    || ""),
+            prerequisites: ensureLineBreaks(aiData.prerequisites || ""),
+            requirements:  ensureLineBreaks(aiData.requirements  || ""),
+            methodology:   ensureLineBreaks(aiData.methodology   || ""),
+            workflow:      ensureLineBreaks(aiData.workflow      || ""),
+            content:       ensureLineBreaks(aiData.content       || ""),
+            results:       ensureLineBreaks(aiData.result        || ""),  // template uses {results}
+            result:        ensureLineBreaks(aiData.result        || ""),  // keep singular too
+            conclusion:    ensureLineBreaks(aiData.conclusion    || ""),
+            futureScope:   ensureLineBreaks(aiData.futureScope   || ""),
         };
 
         // Fill template

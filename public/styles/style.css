@@ -410,6 +410,22 @@ button:hover {
     letter-spacing: 0.5px;
 }
 
+/* ── Card Description Paragraphs ─────────────────────────────────────────── */
+.card p {
+    font-family: 'Poppins', sans-serif;
+    font-size: 0.75rem;
+    text-align: center;
+    margin: 0;
+    padding: 0 14px;
+    color: var(--text-muted, #aaa);
+    line-height: 1.4;
+    letter-spacing: 0.3px;
+    opacity: 0.85;
+    max-width: 100%;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
 .card-cyan    h2 { text-shadow: 0 0 6px rgba(0, 243, 255, 0.6); }
 .card-magenta h2 { text-shadow: 0 0 6px rgba(255, 0, 255, 0.6); }
 .card-lime    h2 { text-shadow: 0 0 6px rgba(57, 255, 20, 0.6); }
@@ -557,6 +573,13 @@ footer {
         font-size: 0.85rem;
         text-align: left;
         padding: 0;
+    }
+
+    .card p {
+        font-size: 0.7rem;
+        text-align: left;
+        padding: 0;
+        display: none; /* Hide descriptions on mobile for cleaner look */
     }
 
     .neon-text-bottom {
@@ -719,6 +742,11 @@ html[data-theme="light"] .card-orange h2,
 html[data-theme="light"] .card-pink h2,
 html[data-theme="light"] .card-purple h2 {
     text-shadow: none;
+}
+
+html[data-theme="light"] .card p {
+    color: #4a5568;
+    opacity: 1;
 }
 
 html[data-theme="light"] .neon-text-bottom {
