@@ -127,6 +127,117 @@ function safeJsonParse(value) {
     }
 }
 
+function stripMarkdownCodeFences(text) {
+    return String(text || "")
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
+}
+
+function extractJsonPayload(text) {
+    const cleaned = stripMarkdownCodeFences(text);
+    const startIndex = cleaned.search(/[\[{]/);
+
+    if (startIndex === -1) return cleaned;
+
+    const openChar = cleaned[startIndex];
+    const closeChar = openChar === "{" ? "}" : "]";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = startIndex; i < cleaned.length; i++) {
+        const ch = cleaned[i];
+
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === "\\") {
+                escaped = true;
+            } else if (ch === "\"") {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch === "\"") {
+            inString = true;
+            continue;
+        }
+
+        if (ch === openChar) depth++;
+        if (ch === closeChar) {
+            depth--;
+            if (depth === 0) {
+                return cleaned.slice(startIndex, i + 1);
+            }
+        }
+    }
+
+    return cleaned.slice(startIndex);
+}
+
+function escapeJsonControlCharsInStrings(jsonText) {
+    let output = "";
+    let inString = false;
+    let escaped = false;
+
+    for (const ch of jsonText) {
+        if (inString) {
+            if (escaped) {
+                output += ch;
+                escaped = false;
+                continue;
+            }
+
+            if (ch === "\\") {
+                output += ch;
+                escaped = true;
+                continue;
+            }
+
+            if (ch === "\"") {
+                output += ch;
+                inString = false;
+                continue;
+            }
+
+            const code = ch.charCodeAt(0);
+            if (code <= 0x1f) {
+                if (ch === "\n") output += "\\n";
+                else if (ch === "\r") output += "\\r";
+                else if (ch === "\t") output += "\\t";
+                else if (ch === "\b") output += "\\b";
+                else if (ch === "\f") output += "\\f";
+                else output += `\\u${code.toString(16).padStart(4, "0")}`;
+                continue;
+            }
+        } else if (ch === "\"") {
+            inString = true;
+        }
+
+        output += ch;
+    }
+
+    return output;
+}
+
+function parseAiJson(text) {
+    const payload = extractJsonPayload(text);
+
+    try {
+        return JSON.parse(payload);
+    } catch (error) {
+        const repaired = escapeJsonControlCharsInStrings(payload);
+
+        try {
+            return JSON.parse(repaired);
+        } catch (repairError) {
+            throw new Error(`Failed to parse AI JSON: ${repairError.message}`);
+        }
+    }
+}
+
 function normalizeUser(value) {
     const source = value && typeof value === "object" ? value : {};
     const name = String(source.name || "").trim();
@@ -251,8 +362,7 @@ async function generatePptContent(problemStatement) {
 
     if (!responseText) throw new Error("Gemini returned an empty response.");
 
-    responseText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
-    return JSON.parse(responseText);
+    return parseAiJson(responseText);
 }
 
 // ─── PPTX File Builder (shared helper) ───────────────────────────────────────
@@ -487,6 +597,26 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
             }
         }
 
+        const existingQueuePos = await redis.lpos("ppt_queue", userId);
+        if (existingQueuePos !== null) {
+            await setRedisJson(
+                `ppt_result:${userId}`,
+                { status: "waiting", position: existingQueuePos + 1 },
+                EFFECTIVE_JOB_TTL_SECONDS
+            );
+            return res.json({ queued: true, position: existingQueuePos + 1 });
+        }
+
+        const existingProcessingPos = await redis.lpos("ppt_processing", userId);
+        if (existingProcessingPos !== null) {
+            await setRedisJson(
+                `ppt_result:${userId}`,
+                { status: "generating", startedAt: Date.now() },
+                EFFECTIVE_JOB_TTL_SECONDS
+            );
+            return res.json({ queued: true, processing: true });
+        }
+
         // Save form data + user identity to Redis (session not reliable across Vercel instances)
         await setRedisJson(
             `ppt_form:${userId}`,
@@ -542,6 +672,16 @@ async function processNextInQueue() {
         // Read + clamp active counter
         let activeJobs = parseInt(await redis.get("active_jobs") || "0", 10);
         if (isNaN(activeJobs) || activeJobs < 0) { activeJobs = 0; await redis.set("active_jobs", "0"); }
+        const processing = await redis.lrange("ppt_processing", 0, -1);
+        if (processing.length === 0 && activeJobs > 0) {
+            console.warn(`[Queue] Resetting stale active count ${activeJobs} before dispatch`);
+            activeJobs = 0;
+            await redis.set("active_jobs", "0");
+        } else if (activeJobs > processing.length) {
+            console.warn(`[Queue] Clamping stale active count ${activeJobs} -> ${processing.length}`);
+            activeJobs = processing.length;
+            await redis.set("active_jobs", String(processing.length));
+        }
 
         console.log(`[Queue] active=${activeJobs}/${MAX_ACTIVE_JOBS}`);
 
@@ -636,6 +776,21 @@ async function recoverStuckJobs() {
         const processing = await redis.lrange("ppt_processing", 0, -1);
         const STUCK_MS = 8 * 60 * 1000; // 8 min — Gemini never takes this long
 
+        let active = parseInt(await redis.get("active_jobs") || "0", 10);
+        if (isNaN(active) || active < 0) active = 0;
+
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[Recovery] Resetting stale PPT active count ${active} with empty processing list`);
+            await redis.set("active_jobs", "0");
+            active = 0;
+            freedAny = true;
+        } else if (active > processing.length) {
+            console.warn(`[Recovery] Clamping stale PPT active count ${active} -> ${processing.length}`);
+            await redis.set("active_jobs", String(processing.length));
+            active = processing.length;
+            freedAny = true;
+        }
+
         for (const userId of processing) {
             const result = await getRedisJson(`ppt_result:${userId}`);
 
@@ -647,6 +802,11 @@ async function recoverStuckJobs() {
                 if (n < 0) await redis.set("active_jobs", "0");
                 const pos = await redis.lpos("ppt_queue", userId);
                 if (pos === null) await redis.rpush("ppt_queue", userId);
+                await setRedisJson(
+                    `ppt_result:${userId}`,
+                    { status: "waiting", position: 99 },
+                    EFFECTIVE_JOB_TTL_SECONDS
+                );
                 freedAny = true;
                 continue;
             }
@@ -671,6 +831,12 @@ async function recoverStuckJobs() {
         }
         await refreshPptQueuePositions();
 
+        const queueLength = await redis.llen("ppt_queue");
+        const refreshedActive = parseInt(await redis.get("active_jobs") || "0", 10);
+        if (queueLength > 0 && (isNaN(refreshedActive) || refreshedActive < MAX_ACTIVE_JOBS)) {
+            freedAny = true;
+        }
+
         if (freedAny) {
             console.log("[Recovery] Freed stuck PPT slots, restarting queue...");
             processNextInQueue().catch(err =>
@@ -687,15 +853,29 @@ async function recoverStuckReports() {
     if (!throttle) return;
 
     try {
-        let freedAny = false; 
+        let freedAny = false;
 
         const processing = await redis.lrange("report_processing", 0, -1);
         const STUCK_MS = 8 * 60 * 1000; // 8 minutes
+        let active = parseInt(await redis.get("report_active") || "0", 10);
+        if (isNaN(active) || active < 0) active = 0;
+
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[ReportRecovery] Resetting stale active count ${active} with empty processing list`);
+            await redis.set("report_active", "0");
+            active = 0;
+            freedAny = true;
+        } else if (active > processing.length) {
+            console.warn(`[ReportRecovery] Clamping stale active count ${active} -> ${processing.length}`);
+            await redis.set("report_active", String(processing.length));
+            active = processing.length;
+            freedAny = true;
+        }
 
         for (const userId of processing) {
-            const resultRaw = await redis.get(`report_result:${userId}`);
+            const result = await getRedisJson(`report_result:${userId}`);
 
-            if (!resultRaw) {
+            if (!result) {
                 console.warn(`[ReportRecovery] Missing result for ${userId}, freeing slot`);
                 await redis.lrem("report_processing", 0, userId);
 
@@ -714,8 +894,6 @@ async function recoverStuckReports() {
                 freedAny = true; // <-- ADD THIS
                 continue;
             }
-
-            const result = typeof resultRaw === "string" ? JSON.parse(resultRaw) : resultRaw;
 
             if (result.status === "generating") {
                 const age = Date.now() - (result.startedAt || 0);
@@ -743,6 +921,12 @@ async function recoverStuckReports() {
         }
 
         await refreshReportQueuePositions();
+
+        const queueLength = await redis.llen("report_queue");
+        const refreshedActive = parseInt(await redis.get("report_active") || "0", 10);
+        if (queueLength > 0 && (isNaN(refreshedActive) || refreshedActive < MAX_REPORT_JOBS)) {
+            freedAny = true;
+        }
 
         //  IMPORTANT: restart queue if slots were freed
         if (freedAny) {
@@ -798,7 +982,58 @@ app.get("/ppt-status/:userId", isAuthenticated, async (req, res) => {
         processNextInQueue().catch(console.error);
 
         const data = await getRedisJson(`ppt_result:${userId}`);
-        if (!data) return res.json({ status: "not_found" });
+        if (!data) {
+            const queuePos = await redis.lpos("ppt_queue", userId);
+            const processingPos = await redis.lpos("ppt_processing", userId);
+
+            if (queuePos !== null) {
+                await setRedisJson(
+                    `ppt_result:${userId}`,
+                    { status: "waiting", position: queuePos + 1 },
+                    EFFECTIVE_JOB_TTL_SECONDS
+                );
+                return res.json({ status: "waiting", position: queuePos + 1 });
+            }
+
+            if (processingPos !== null) {
+                await setRedisJson(
+                    `ppt_result:${userId}`,
+                    { status: "generating", startedAt: Date.now() },
+                    EFFECTIVE_JOB_TTL_SECONDS
+                );
+                return res.json({ status: "generating" });
+            }
+
+            return res.json({ status: "not_found" });
+        }
+
+        if (data.status === "waiting") {
+            const queuePos = await redis.lpos("ppt_queue", userId);
+            const processingPos = await redis.lpos("ppt_processing", userId);
+
+            if (queuePos === null && processingPos === null) {
+                console.warn(`[Status] Re-queueing lost PPT job for ${userId}`);
+                await redis.rpush("ppt_queue", userId);
+                await refreshPptQueuePositions();
+                processNextInQueue().catch(console.error);
+                const repaired = await getRedisJson(`ppt_result:${userId}`);
+                return res.json(repaired || { status: "waiting", position: 1 });
+            }
+
+            return res.json({
+                ...data,
+                position: queuePos === null ? data.position || 1 : queuePos + 1
+            });
+        }
+
+        if (data.status === "generating") {
+            const processingPos = await redis.lpos("ppt_processing", userId);
+            if (processingPos === null) {
+                console.warn(`[Status] Generating PPT missing from processing for ${userId}, forcing recovery`);
+                recoverStuckJobs().catch(console.error);
+                processNextInQueue().catch(console.error);
+            }
+        }
 
         if (data.status === "done") {
             // Populate session so /edit and /download work on this instance
@@ -945,8 +1180,7 @@ Rules:
 
         if (!responseText) throw new Error("Gemini returned empty response.");
 
-        responseText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
-        const updatedContent = JSON.parse(responseText);
+        const updatedContent = parseAiJson(responseText);
 
         await setRedisJson(
             `ppt_result:${req.user.studentId}`,
@@ -1348,12 +1582,7 @@ ${numberedQuestions}
         try {
             console.log(`Processing batch ${batchNum} (${batch.length} questions)...`);
             const result = await generateWithFallback(m => m.generateContent(prompt), false);
-            let text = result.response.text()
-                .replace(/```json/g, "")
-                .replace(/```/g, "")
-                .trim();
-
-            const parsed = JSON.parse(text);
+            const parsed = parseAiJson(result.response.text());
             parsed.forEach((item) => {
                 // Use item.index (as returned by the model) to find the original question index
                 const batchItem = batch[item.index];
@@ -1389,6 +1618,34 @@ ${numberedQuestions}
 const MAX_REPORT_JOBS  = 4;
 const EFFECTIVE_REPORT_TTL = 60 * 60;
 const REPORT_TTL       = 600; // 10 min
+const REPORT_RUNNER_STALE_MS = 90 * 1000;
+const REPORT_RUNNER_LOCK_TTL = 120;
+
+function getReportRunnerKey(userId) {
+    return `report_runner:${userId}`;
+}
+
+async function touchReportRunner(userId) {
+    await redis.set(getReportRunnerKey(userId), String(Date.now()), { ex: REPORT_RUNNER_LOCK_TTL });
+}
+
+async function ensureReportWorkerRunning(userId) {
+    const runnerKey = getReportRunnerKey(userId);
+    const heartbeat = parseInt(await redis.get(runnerKey) || "0", 10);
+
+    if (!isNaN(heartbeat) && heartbeat > 0 && Date.now() - heartbeat <= REPORT_RUNNER_STALE_MS) {
+        return false;
+    }
+
+    if (!isNaN(heartbeat) && heartbeat > 0) {
+        console.warn(`[ReportStatus] Stale worker heartbeat for ${userId}, reclaiming lock`);
+        await redis.del(runnerKey);
+    }
+
+    console.log(`[ReportStatus] Resuming worker for ${userId}`);
+    runReportJob(userId).catch(err => console.error(`[ReportStatus] resume failed ${userId}:`, err));
+    return true;
+}
 
 async function refreshReportQueuePositions() {
     const queue = await redis.lrange("report_queue", 0, -1);
@@ -1415,6 +1672,27 @@ app.post("/generate-report", isAuthenticated, async (req, res) => {
             }
         }
 
+        const existingQueuePos = await redis.lpos("report_queue", userId);
+        if (existingQueuePos !== null) {
+            await setRedisJson(
+                `report_result:${userId}`,
+                { status: "waiting", position: existingQueuePos + 1 },
+                EFFECTIVE_REPORT_TTL
+            );
+            return res.json({ queued: true, position: existingQueuePos + 1 });
+        }
+
+        const existingProcessingPos = await redis.lpos("report_processing", userId);
+        if (existingProcessingPos !== null) {
+            await ensureReportWorkerRunning(userId);
+            await setRedisJson(
+                `report_result:${userId}`,
+                { status: "generating", startedAt: Date.now() },
+                EFFECTIVE_REPORT_TTL
+            );
+            return res.json({ queued: true, processing: true });
+        }
+
         // Persist entire form to Redis — session unreliable across Vercel instances
         const formData = { ...req.body, authenticatedUser: req.user };
         await setRedisJson(
@@ -1438,8 +1716,8 @@ app.post("/generate-report", isAuthenticated, async (req, res) => {
 
         console.log(`[ReportQueue] Enqueued ${userId} at position ${position}`);
 
-        // Kick the worker
-        processNextReport().catch(err => console.error("[ReportQueue] boot error:", err));
+        // Kick the worker before returning so Vercel does not drop the dispatch.
+        await processNextReport().catch(err => console.error("[ReportQueue] boot error:", err));
 
         return res.json({ queued: true, position });
 
@@ -1457,6 +1735,16 @@ async function processNextReport() {
     try {
         let active = parseInt(await redis.get("report_active") || "0", 10);
         if (isNaN(active) || active < 0) { active = 0; await redis.set("report_active", "0"); }
+        const processing = await redis.lrange("report_processing", 0, -1);
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[ReportQueue] Resetting stale active count ${active} before dispatch`);
+            active = 0;
+            await redis.set("report_active", "0");
+        } else if (active > processing.length) {
+            console.warn(`[ReportQueue] Clamping stale active count ${active} -> ${processing.length}`);
+            active = processing.length;
+            await redis.set("report_active", String(processing.length));
+        }
 
         console.log(`[ReportQueue] active=${active}/${MAX_REPORT_JOBS}`);
         if (active >= MAX_REPORT_JOBS) return;
@@ -1487,14 +1775,37 @@ async function processNextReport() {
 
 // ─── Run one report generation job ───────────────────────────────────────────
 async function runReportJob(userId) {
+    const runnerKey = getReportRunnerKey(userId);
+    let runnerLock = await redis.set(runnerKey, String(Date.now()), { nx: true, ex: REPORT_RUNNER_LOCK_TTL });
+
+    if (!runnerLock) {
+        const heartbeat = parseInt(await redis.get(runnerKey) || "0", 10);
+        if (!isNaN(heartbeat) && heartbeat > 0 && Date.now() - heartbeat <= REPORT_RUNNER_STALE_MS) {
+            console.log(`[ReportQueue] Worker already running for ${userId}, skipping duplicate start`);
+            return;
+        }
+
+        console.warn(`[ReportQueue] Reclaiming stale worker lock for ${userId}`);
+        await redis.del(runnerKey);
+        runnerLock = await redis.set(runnerKey, String(Date.now()), { nx: true, ex: REPORT_RUNNER_LOCK_TTL });
+        if (!runnerLock) {
+            console.log(`[ReportQueue] Worker lock still busy for ${userId}, skipping`);
+            return;
+        }
+    }
+
     try {
+        await touchReportRunner(userId);
+        console.log(`[ReportQueue] Reading form data for ${userId}`);
         const formData = await getRedisJson(`report_form:${userId}`);
         if (!formData) throw new Error("Form data missing for user: " + userId);
+        await touchReportRunner(userId);
 
         const questions = [];
         for (let i = 1; i <= 10; i++) questions.push(formData[`question${i}`] || "");
 
         const rawAnswers = await batchGenerateAnswers(questions);
+        await touchReportRunner(userId);
 
         const docData = {
             name:        formData.name,
@@ -1528,6 +1839,7 @@ async function runReportJob(userId) {
             },
             EFFECTIVE_REPORT_TTL
         );
+        await touchReportRunner(userId);
 
         console.log(`[ReportQueue] Job done for ${userId}`);
 
@@ -1539,6 +1851,7 @@ async function runReportJob(userId) {
             10 * 60
         );
     } finally {
+        await redis.del(runnerKey);
         const n = await redis.decr("report_active");
         if (n < 0) await redis.set("report_active", "0");
 
@@ -1561,10 +1874,75 @@ app.get("/report-status/:userId", isAuthenticated, async (req, res) => {
     }
 
     try {
-        recoverStuckReports().catch(console.error);
-        processNextReport().catch(console.error);
+        await recoverStuckReports().catch(console.error);
+        await processNextReport().catch(console.error);
         const data = await getRedisJson(`report_result:${userId}`);
-        if (!data) return res.json({ status: "not_found" });
+        if (!data) {
+            const queuePos = await redis.lpos("report_queue", userId);
+            const processingPos = await redis.lpos("report_processing", userId);
+
+            if (queuePos !== null) {
+                await setRedisJson(
+                    `report_result:${userId}`,
+                    { status: "waiting", position: queuePos + 1 },
+                    EFFECTIVE_REPORT_TTL
+                );
+                return res.json({ status: "waiting", position: queuePos + 1 });
+            }
+
+            if (processingPos !== null) {
+                await ensureReportWorkerRunning(userId);
+                await setRedisJson(
+                    `report_result:${userId}`,
+                    { status: "generating", startedAt: Date.now() },
+                    EFFECTIVE_REPORT_TTL
+                );
+                return res.json({ status: "generating" });
+            }
+
+            return res.json({ status: "not_found" });
+        }
+
+        if (data.status === "waiting") {
+            const queuePos = await redis.lpos("report_queue", userId);
+            const processingPos = await redis.lpos("report_processing", userId);
+
+            if (processingPos !== null) {
+                await ensureReportWorkerRunning(userId);
+                await setRedisJson(
+                    `report_result:${userId}`,
+                    { status: "generating", startedAt: data.startedAt || Date.now() },
+                    EFFECTIVE_REPORT_TTL
+                );
+                return res.json({ status: "generating" });
+            }
+
+            if (queuePos === null && processingPos === null) {
+                console.warn(`[ReportStatus] Re-queueing lost waiting job for ${userId}`);
+                await redis.rpush("report_queue", userId);
+                await refreshReportQueuePositions();
+                await processNextReport().catch(console.error);
+                const repaired = await getRedisJson(`report_result:${userId}`);
+                return res.json(repaired || { status: "waiting", position: 1 });
+            }
+
+            return res.json({
+                ...data,
+                position: queuePos === null ? data.position || 1 : queuePos + 1
+            });
+        }
+
+        if (data.status === "generating") {
+            const processingPos = await redis.lpos("report_processing", userId);
+            if (processingPos === null) {
+                console.warn(`[ReportStatus] Generating job missing from processing for ${userId}, forcing recovery`);
+                await recoverStuckReports().catch(console.error);
+                await processNextReport().catch(console.error);
+            } else {
+                await ensureReportWorkerRunning(userId);
+            }
+        }
+
         // Don't send the base64 blob in the status poll — only send metadata
         if (data.status === "done") {
             return res.json({ status: "done", fileName: data.fileName });
@@ -1643,6 +2021,20 @@ async function recoverStuckCEP() {
         let freedAny = false;
         const processing = await redis.lrange("cep_processing", 0, -1);
         const STUCK_MS = 8 * 60 * 1000;
+        let active = parseInt(await redis.get("cep_active") || "0", 10);
+        if (isNaN(active) || active < 0) active = 0;
+
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[CEPRecovery] Resetting stale active count ${active} with empty processing list`);
+            await redis.set("cep_active", "0");
+            active = 0;
+            freedAny = true;
+        } else if (active > processing.length) {
+            console.warn(`[CEPRecovery] Clamping stale active count ${active} -> ${processing.length}`);
+            await redis.set("cep_active", String(processing.length));
+            active = processing.length;
+            freedAny = true;
+        }
 
         for (const userId of processing) {
             const result = await getRedisJson(`cep_result:${userId}`);
@@ -1654,6 +2046,11 @@ async function recoverStuckCEP() {
                 if (n < 0) await redis.set("cep_active", "0");
                 const pos = await redis.lpos("cep_queue", userId);
                 if (pos === null) await redis.rpush("cep_queue", userId);
+                await setRedisJson(
+                    `cep_result:${userId}`,
+                    { status: "waiting", position: 99 },
+                    EFFECTIVE_CEP_TTL
+                );
                 freedAny = true;
                 continue;
             }
@@ -1678,6 +2075,11 @@ async function recoverStuckCEP() {
         }
 
         await refreshCepQueuePositions();
+        const queueLength = await redis.llen("cep_queue");
+        const refreshedActive = parseInt(await redis.get("cep_active") || "0", 10);
+        if (queueLength > 0 && (isNaN(refreshedActive) || refreshedActive < MAX_CEP_JOBS)) {
+            freedAny = true;
+        }
 
         if (freedAny) {
             console.log("[CEPRecovery] Freed stuck CEP slots, restarting queue...");
@@ -1698,6 +2100,26 @@ app.post("/generate-cep", isAuthenticated, async (req, res) => {
             if (existing.status === "waiting" || existing.status === "generating") {
                 return res.json({ queued: true, position: existing.position || 1 });
             }
+        }
+
+        const existingQueuePos = await redis.lpos("cep_queue", userId);
+        if (existingQueuePos !== null) {
+            await setRedisJson(
+                `cep_result:${userId}`,
+                { status: "waiting", position: existingQueuePos + 1 },
+                EFFECTIVE_CEP_TTL
+            );
+            return res.json({ queued: true, position: existingQueuePos + 1 });
+        }
+
+        const existingProcessingPos = await redis.lpos("cep_processing", userId);
+        if (existingProcessingPos !== null) {
+            await setRedisJson(
+                `cep_result:${userId}`,
+                { status: "generating", startedAt: Date.now() },
+                EFFECTIVE_CEP_TTL
+            );
+            return res.json({ queued: true, processing: true });
         }
 
         // Save form data to Redis
@@ -1733,6 +2155,16 @@ async function processNextCEP() {
     try {
         let active = parseInt(await redis.get("cep_active") || "0", 10);
         if (isNaN(active) || active < 0) { active = 0; await redis.set("cep_active", "0"); }
+        const processing = await redis.lrange("cep_processing", 0, -1);
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[CEP] Resetting stale active count ${active} before dispatch`);
+            active = 0;
+            await redis.set("cep_active", "0");
+        } else if (active > processing.length) {
+            console.warn(`[CEP] Clamping stale active count ${active} -> ${processing.length}`);
+            active = processing.length;
+            await redis.set("cep_active", String(processing.length));
+        }
 
         console.log(`[CEP] active=${active}/${MAX_CEP_JOBS}`);
         if (active >= MAX_CEP_JOBS) return;
@@ -1765,6 +2197,7 @@ async function runCEPJob(userId) {
     try {
         const form = await getRedisJson(`cep_form:${userId}`);
         if (!form) throw new Error("Form data missing for user: " + userId);
+        console.log(`[CEP] Reading form data for ${userId}`);
 
         const ps = form.problemStatement || "";
 
@@ -1806,9 +2239,7 @@ CRITICAL RULES:
 `;
 
         const aiResult = await generateWithFallback(m => m.generateContent(prompt), true);
-        let aiText = aiResult.response.text()
-            .replace(/\`\`\`json/g, "").replace(/\`\`\`/g, "").trim();
-        const aiData = JSON.parse(aiText);
+        const aiData = parseAiJson(aiResult.response.text());
 
         // ── Post-process AI text: ensure numbered items are on their own lines ──────
         // Handles cases where the AI returns "1. Foo 2. Bar" instead of "1. Foo\n2. Bar"
@@ -1923,7 +2354,59 @@ app.get("/cep-status/:userId", isAuthenticated, async (req, res) => {
         recoverStuckCEP().catch(console.error);
         processNextCEP().catch(console.error);
         const data = await getRedisJson(`cep_result:${userId}`);
-        if (!data) return res.json({ status: "not_found" });
+        if (!data) {
+            const queuePos = await redis.lpos("cep_queue", userId);
+            const processingPos = await redis.lpos("cep_processing", userId);
+
+            if (queuePos !== null) {
+                await setRedisJson(
+                    `cep_result:${userId}`,
+                    { status: "waiting", position: queuePos + 1 },
+                    EFFECTIVE_CEP_TTL
+                );
+                return res.json({ status: "waiting", position: queuePos + 1 });
+            }
+
+            if (processingPos !== null) {
+                await setRedisJson(
+                    `cep_result:${userId}`,
+                    { status: "generating", startedAt: Date.now() },
+                    EFFECTIVE_CEP_TTL
+                );
+                return res.json({ status: "generating" });
+            }
+
+            return res.json({ status: "not_found" });
+        }
+
+        if (data.status === "waiting") {
+            const queuePos = await redis.lpos("cep_queue", userId);
+            const processingPos = await redis.lpos("cep_processing", userId);
+
+            if (queuePos === null && processingPos === null) {
+                console.warn(`[CEPStatus] Re-queueing lost waiting job for ${userId}`);
+                await redis.rpush("cep_queue", userId);
+                await refreshCepQueuePositions();
+                processNextCEP().catch(console.error);
+                const repaired = await getRedisJson(`cep_result:${userId}`);
+                return res.json(repaired || { status: "waiting", position: 1 });
+            }
+
+            return res.json({
+                ...data,
+                position: queuePos === null ? data.position || 1 : queuePos + 1
+            });
+        }
+
+        if (data.status === "generating") {
+            const processingPos = await redis.lpos("cep_processing", userId);
+            if (processingPos === null) {
+                console.warn(`[CEPStatus] Generating job missing from processing for ${userId}, forcing recovery`);
+                recoverStuckCEP().catch(console.error);
+                processNextCEP().catch(console.error);
+            }
+        }
+
         if (data.status === "done") return res.json({ status: "done", fileName: data.fileName });
         return res.json(data);
     } catch (err) {
