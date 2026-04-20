@@ -569,6 +569,34 @@ app.get("/ppt", isAuthenticated, (req, res) => {
 // ─── Redis Queue Constants ────────────────────────────────────────────────────
 const MAX_ACTIVE_JOBS = 4;
 const EFFECTIVE_JOB_TTL_SECONDS = 60 * 60;
+const PPT_RUNNER_STALE_MS = 90 * 1000;
+const PPT_RUNNER_LOCK_TTL = 120;
+
+function getPptRunnerKey(userId) {
+    return `ppt_runner:${userId}`;
+}
+
+async function touchPptRunner(userId) {
+    await redis.set(getPptRunnerKey(userId), String(Date.now()), { ex: PPT_RUNNER_LOCK_TTL });
+}
+
+async function ensurePptWorkerRunning(userId) {
+    const runnerKey = getPptRunnerKey(userId);
+    const heartbeat = parseInt(await redis.get(runnerKey) || "0", 10);
+
+    if (!isNaN(heartbeat) && heartbeat > 0 && Date.now() - heartbeat <= PPT_RUNNER_STALE_MS) {
+        return false;
+    }
+
+    if (!isNaN(heartbeat) && heartbeat > 0) {
+        console.warn(`[Status] Stale PPT worker heartbeat for ${userId}, reclaiming lock`);
+        await redis.del(runnerKey);
+    }
+
+    console.log(`[Status] Resuming PPT worker for ${userId}`);
+    runPptJob(userId).catch(err => console.error(`[Status] PPT resume failed ${userId}:`, err));
+    return true;
+}
 
 async function refreshPptQueuePositions() {
     const queue = await redis.lrange("ppt_queue", 0, -1);
@@ -609,6 +637,7 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
 
         const existingProcessingPos = await redis.lpos("ppt_processing", userId);
         if (existingProcessingPos !== null) {
+            await ensurePptWorkerRunning(userId);
             await setRedisJson(
                 `ppt_result:${userId}`,
                 { status: "generating", startedAt: Date.now() },
@@ -647,8 +676,8 @@ app.post("/generate-ppt", isAuthenticated, async (req, res) => {
 
         console.log(`[Queue] Enqueued PPT for ${userId} at position ${position}`);
 
-        // Try to start processing immediately (non-blocking)
-        processNextInQueue().catch(err => console.error("[Queue] processNextInQueue error:", err));
+        // Try to start processing immediately before returning on Vercel.
+        await processNextInQueue().catch(err => console.error("[Queue] processNextInQueue error:", err));
 
         // Return queued status to frontend — frontend will poll /ppt-status/:userId
         return res.json({ queued: true, position });
@@ -713,7 +742,27 @@ async function processNextInQueue() {
 
 // ─── Run the actual PPT generation job ────────────────────────────────────────
 async function runPptJob(userId) {
+    const runnerKey = getPptRunnerKey(userId);
+    let runnerLock = await redis.set(runnerKey, String(Date.now()), { nx: true, ex: PPT_RUNNER_LOCK_TTL });
+
+    if (!runnerLock) {
+        const heartbeat = parseInt(await redis.get(runnerKey) || "0", 10);
+        if (!isNaN(heartbeat) && heartbeat > 0 && Date.now() - heartbeat <= PPT_RUNNER_STALE_MS) {
+            console.log(`[Queue] PPT worker already running for ${userId}, skipping duplicate start`);
+            return;
+        }
+
+        console.warn(`[Queue] Reclaiming stale PPT worker lock for ${userId}`);
+        await redis.del(runnerKey);
+        runnerLock = await redis.set(runnerKey, String(Date.now()), { nx: true, ex: PPT_RUNNER_LOCK_TTL });
+        if (!runnerLock) {
+            console.log(`[Queue] PPT worker lock still busy for ${userId}, skipping`);
+            return;
+        }
+    }
+
     try {
+        await touchPptRunner(userId);
         const active = await redis.get(`user_active:${userId}`);
 
         if (!active) {
@@ -725,8 +774,10 @@ async function runPptJob(userId) {
         if (!formData) {
             throw new Error("Form data not found in Redis for user: " + userId);
         }
+        await touchPptRunner(userId);
 
         const content = await generatePptContent(formData.problemStatement);
+        await touchPptRunner(userId);
 
         const result = {
             status: "done",
@@ -742,6 +793,7 @@ async function runPptJob(userId) {
 
         // Store result — frontend will read this on next poll
         await setRedisJson(`ppt_result:${userId}`, result, EFFECTIVE_JOB_TTL_SECONDS);
+        await touchPptRunner(userId);
         console.log(`[Queue] Job done for user: ${userId}`);
 
     } catch (err) {
@@ -752,6 +804,7 @@ async function runPptJob(userId) {
             10 * 60
         );
     } finally {
+        await redis.del(runnerKey);
         const nextActive = await redis.decr("active_jobs");
         if (nextActive < 0) {
             await redis.set("active_jobs", "0");
@@ -978,8 +1031,8 @@ app.get("/ppt-status/:userId", isAuthenticated, async (req, res) => {
 
     try {
         // Throttled recovery — max once per 60s, not on every 3s poll
-        recoverStuckJobs().catch(console.error);
-        processNextInQueue().catch(console.error);
+        await recoverStuckJobs().catch(console.error);
+        await processNextInQueue().catch(console.error);
 
         const data = await getRedisJson(`ppt_result:${userId}`);
         if (!data) {
@@ -996,6 +1049,7 @@ app.get("/ppt-status/:userId", isAuthenticated, async (req, res) => {
             }
 
             if (processingPos !== null) {
+                await ensurePptWorkerRunning(userId);
                 await setRedisJson(
                     `ppt_result:${userId}`,
                     { status: "generating", startedAt: Date.now() },
@@ -1011,11 +1065,21 @@ app.get("/ppt-status/:userId", isAuthenticated, async (req, res) => {
             const queuePos = await redis.lpos("ppt_queue", userId);
             const processingPos = await redis.lpos("ppt_processing", userId);
 
+            if (processingPos !== null) {
+                await ensurePptWorkerRunning(userId);
+                await setRedisJson(
+                    `ppt_result:${userId}`,
+                    { status: "generating", startedAt: data.startedAt || Date.now() },
+                    EFFECTIVE_JOB_TTL_SECONDS
+                );
+                return res.json({ status: "generating" });
+            }
+
             if (queuePos === null && processingPos === null) {
                 console.warn(`[Status] Re-queueing lost PPT job for ${userId}`);
                 await redis.rpush("ppt_queue", userId);
                 await refreshPptQueuePositions();
-                processNextInQueue().catch(console.error);
+                await processNextInQueue().catch(console.error);
                 const repaired = await getRedisJson(`ppt_result:${userId}`);
                 return res.json(repaired || { status: "waiting", position: 1 });
             }
@@ -1030,8 +1094,10 @@ app.get("/ppt-status/:userId", isAuthenticated, async (req, res) => {
             const processingPos = await redis.lpos("ppt_processing", userId);
             if (processingPos === null) {
                 console.warn(`[Status] Generating PPT missing from processing for ${userId}, forcing recovery`);
-                recoverStuckJobs().catch(console.error);
-                processNextInQueue().catch(console.error);
+                await recoverStuckJobs().catch(console.error);
+                await processNextInQueue().catch(console.error);
+            } else {
+                await ensurePptWorkerRunning(userId);
             }
         }
 
