@@ -2516,6 +2516,577 @@ app.get("/cep-queue", isAuthenticated, (req, res) => {
     res.render("cep-queue", { user: req.user });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// CASE STUDY — Queue-based generation with Docxtemplater
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MAX_CASE_STUDY_JOBS = 4;
+const EFFECTIVE_CASE_STUDY_TTL = 60 * 60;
+
+async function refreshCaseStudyQueuePositions() {
+    const queue = await redis.lrange("case_study_queue", 0, -1);
+
+    for (let i = 0; i < queue.length; i++) {
+        await setRedisJson(
+            `case_study_result:${queue[i]}`,
+            { status: "waiting", position: i + 1 },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+    }
+}
+
+async function recoverStuckCaseStudy() {
+    const throttle = await redis.set("case_study_recovery_lock", "1", { nx: true, ex: 60 });
+    if (!throttle) return;
+
+    try {
+        let freedAny = false;
+        const processing = await redis.lrange("case_study_processing", 0, -1);
+        const STUCK_MS = 8 * 60 * 1000;
+        let active = parseInt(await redis.get("case_study_active") || "0", 10);
+        if (isNaN(active) || active < 0) active = 0;
+
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[CaseStudyRecovery] Resetting stale active count ${active} with empty processing list`);
+            await redis.set("case_study_active", "0");
+            active = 0;
+            freedAny = true;
+        } else if (active > processing.length) {
+            console.warn(`[CaseStudyRecovery] Clamping stale active count ${active} -> ${processing.length}`);
+            await redis.set("case_study_active", String(processing.length));
+            active = processing.length;
+            freedAny = true;
+        }
+
+        for (const userId of processing) {
+            const result = await getRedisJson(`case_study_result:${userId}`);
+
+            if (!result) {
+                console.warn(`[CaseStudyRecovery] Missing result for ${userId}, re-queuing`);
+                await redis.lrem("case_study_processing", 0, userId);
+                const n = await redis.decr("case_study_active");
+                if (n < 0) await redis.set("case_study_active", "0");
+                const pos = await redis.lpos("case_study_queue", userId);
+                if (pos === null) await redis.rpush("case_study_queue", userId);
+                await setRedisJson(
+                    `case_study_result:${userId}`,
+                    { status: "waiting", position: 99 },
+                    EFFECTIVE_CASE_STUDY_TTL
+                );
+                freedAny = true;
+                continue;
+            }
+
+            if (result.status === "generating") {
+                const age = Date.now() - (result.startedAt || 0);
+                if (!result.startedAt || age > STUCK_MS) {
+                    console.warn(`[CaseStudyRecovery] Stuck case study for ${userId}, re-queuing`);
+                    await redis.lrem("case_study_processing", 0, userId);
+                    const n = await redis.decr("case_study_active");
+                    if (n < 0) await redis.set("case_study_active", "0");
+                    const pos = await redis.lpos("case_study_queue", userId);
+                    if (pos === null) await redis.rpush("case_study_queue", userId);
+                    await setRedisJson(
+                        `case_study_result:${userId}`,
+                        { status: "waiting", position: 99 },
+                        EFFECTIVE_CASE_STUDY_TTL
+                    );
+                    freedAny = true;
+                }
+            }
+        }
+
+        await refreshCaseStudyQueuePositions();
+        const queueLength = await redis.llen("case_study_queue");
+        const refreshedActive = parseInt(await redis.get("case_study_active") || "0", 10);
+        if (queueLength > 0 && (isNaN(refreshedActive) || refreshedActive < MAX_CASE_STUDY_JOBS)) {
+            freedAny = true;
+        }
+
+        if (freedAny) {
+            console.log("[CaseStudyRecovery] Freed stuck case study slots, restarting queue...");
+            processNextCaseStudy().catch(err => console.error("[CaseStudyRecovery] restart error:", err));
+        }
+    } catch (err) {
+        console.error("[CaseStudyRecovery] error:", err);
+    }
+}
+
+// ─── Enqueue Case Study ───────────────────────────────────────────────────────
+app.post("/generate-case-study", isAuthenticated, async (req, res) => {
+    const userId = req.user.studentId;
+    try {
+        // Don't double-queue
+        const existing = await getRedisJson(`case_study_result:${userId}`);
+        if (existing) {
+            if (existing.status === "waiting" || existing.status === "generating") {
+                return res.json({ queued: true, position: existing.position || 1 });
+            }
+        }
+
+        const existingQueuePos = await redis.lpos("case_study_queue", userId);
+        if (existingQueuePos !== null) {
+            await setRedisJson(
+                `case_study_result:${userId}`,
+                { status: "waiting", position: existingQueuePos + 1 },
+                EFFECTIVE_CASE_STUDY_TTL
+            );
+            return res.json({ queued: true, position: existingQueuePos + 1 });
+        }
+
+        const existingProcessingPos = await redis.lpos("case_study_processing", userId);
+        if (existingProcessingPos !== null) {
+            await setRedisJson(
+                `case_study_result:${userId}`,
+                { status: "generating", startedAt: Date.now() },
+                EFFECTIVE_CASE_STUDY_TTL
+            );
+            return res.json({ queued: true, processing: true });
+        }
+
+        // Save form data to Redis
+        await setRedisJson(`case_study_form:${userId}`, { ...req.body, authenticatedUser: req.user }, EFFECTIVE_CASE_STUDY_TTL);
+
+        await redis.lrem("case_study_queue", 0, userId);
+        await redis.rpush("case_study_queue", userId);
+
+        const queue    = await redis.lrange("case_study_queue", 0, -1);
+        const position = queue.indexOf(userId) + 1;
+
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            { status: "waiting", position },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+
+        console.log(`[CaseStudy] Enqueued ${userId} at position ${position}`);
+        processNextCaseStudy().catch(err => console.error("[CaseStudy] boot error:", err));
+        return res.json({ queued: true, position });
+
+    } catch (err) {
+        console.error("[CaseStudy] Enqueue error:", err);
+        return res.status(500).json({ error: "Failed to queue: " + err.message });
+    }
+});
+
+// ─── Case Study Queue Worker ──────────────────────────────────────────────────
+async function processNextCaseStudy() {
+    const lock = await redis.set("case_study_lock", "1", { nx: true, ex: 15 });
+    if (!lock) return;
+
+    try {
+        let active = parseInt(await redis.get("case_study_active") || "0", 10);
+        if (isNaN(active) || active < 0) { active = 0; await redis.set("case_study_active", "0"); }
+        const processing = await redis.lrange("case_study_processing", 0, -1);
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[CaseStudy] Resetting stale active count ${active} before dispatch`);
+            active = 0;
+            await redis.set("case_study_active", "0");
+        } else if (active > processing.length) {
+            console.warn(`[CaseStudy] Clamping stale active count ${active} -> ${processing.length}`);
+            active = processing.length;
+            await redis.set("case_study_active", String(processing.length));
+        }
+
+        console.log(`[CaseStudy] active=${active}/${MAX_CASE_STUDY_JOBS}`);
+        if (active >= MAX_CASE_STUDY_JOBS) return;
+
+        const userId = await redis.lpop("case_study_queue");
+        if (!userId) { console.log("[CaseStudy] Queue empty."); return; }
+
+        await redis.lpush("case_study_processing", userId);
+        await redis.incr("case_study_active");
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            { status: "generating", startedAt: Date.now() },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+
+        await refreshCaseStudyQueuePositions();
+
+        console.log(`[CaseStudy] Worker start for ${userId} | active=${active + 1}`);
+        runCaseStudyJob(userId).catch(err => console.error(`[CaseStudy] job error ${userId}:`, err));
+
+    } catch (err) {
+        console.error("[CaseStudy] processNextCaseStudy error:", err);
+    } finally {
+        await redis.del("case_study_lock");
+    }
+}
+
+// ─── Run one Case Study generation job ────────────────────────────────────────
+async function runCaseStudyJob(userId) {
+    try {
+        const form = await getRedisJson(`case_study_form:${userId}`);
+        if (!form) throw new Error("Form data missing for user: " + userId);
+        console.log(`[CaseStudy] Reading form data for ${userId}`);
+
+        const ps = form.problemStatement || "";
+        const topicInput = form.topicName || form.topic || "";
+
+        const rawDate = form.date || new Date().toISOString().split("T")[0];
+        const dateObj = new Date(rawDate);
+        const formattedDate = dateObj.toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "long",
+            year: "numeric"
+        });
+
+        const prompt = `
+You are an expert academic case-study writer for engineering students.
+
+Generate content for a university case study report for:
+Topic: "${topicInput}"
+Problem Statement: "${ps}"
+Institute context: "IARE (Institute of Aeronautical Engineering)"
+
+Return ONLY a valid JSON object with these exact keys and plain string values:
+{
+  "problemStatement": "One concise sentence (12-18 words) describing the central problem. It must work in both heading and summary contexts.",
+  "principleTopic1": "Short side heading (3-7 words) for principles section",
+  "principleTopic2": "Another short side heading (3-7 words) for principles section",
+  "problemTopic1": "Short side heading (3-7 words) for problem subsection",
+  "problemTopic2": "Another short side heading (3-7 words) for problem subsection",
+  "differentApproaches": "A short heading (4-9 words) for section 5",
+  "approachTopic1": "Short side heading (3-7 words) for approach subsection",
+  "approachTopic2": "Another short side heading (3-7 words) for approach subsection",
+  "application": "A short heading (3-8 words) for applications section",
+  "applicationTopic1": "Short side heading (3-7 words) for applications subsection",
+  "applicationTopic2": "Another short side heading (3-7 words) for applications subsection",
+  "designAndAnalysis": "A short heading (4-9 words) for section 7",
+  "pageNo": "Use a simple repeated value such as '1'",
+  "introduction": "Paragraph about topic introduction",
+  "useInCampus": "Paragraph on usage in IARE campus context",
+  "focus": "Paragraph on the focus and solution direction",
+  "whyThisTechnique": "Paragraph on why this technique/solution is chosen",
+  "observation": "Paragraph on observations from the problem context",
+  "scope": "Paragraph on solution scope and boundaries",
+  "theory": "Paragraph on core theory related to topic + problem",
+  "background": "Paragraph on background and prerequisites",
+  "historicalContext": "Paragraph on historical context",
+  "theoreticalFramework": "Paragraph on framework/model used",
+  "principles": "Paragraph explaining main principles",
+  "propertiesOfTopic": "Paragraph on properties relevant to solving the problem",
+  "howItSolves": "Paragraph explaining how the solution addresses the problem",
+  "relatedAns1": "Paragraph answering problem subsection 1",
+  "relatedAns2": "Paragraph answering problem subsection 2",
+  "differentApproachesAns": "Paragraph summarizing multiple approaches",
+  "approachRelatedAns1": "Paragraph answering approach subsection 1",
+  "approachRelatedAns2": "Paragraph answering approach subsection 2",
+  "applicationRelatedAnsMain": "Paragraph on overall application",
+  "applicationRelatedAns1": "Paragraph answering application subsection 1",
+  "applicationRelatedAns2": "Paragraph answering application subsection 2",
+  "conclusion": "Final conclusion paragraph",
+  "references": "Exactly 5 numbered research-paper references in this format: 1. ...\n2. ...\n3. ...\n4. ...\n5. ..."
+}
+
+CRITICAL RULES:
+- Use literal \\n where line separation is needed.
+- Do not use markdown symbols.
+- Keep content formal, clear, and academically meaningful.
+- Keep all headings concise and title-friendly.
+`;
+
+        const aiResult = await generateWithFallback(m => m.generateContent(prompt), true);
+        const aiData = parseAiJson(aiResult.response.text());
+
+        function compactLine(text) {
+            return String(text || "").replace(/\s+/g, " ").trim();
+        }
+
+        function ensureParagraphs(text) {
+            const value = String(text || "").replace(/\r/g, "").trim();
+            if (!value) return "";
+            return value.replace(/\n{3,}/g, "\n\n");
+        }
+
+        function mergeTwoHeadings(a, b, fallbackA, fallbackB) {
+            const first = compactLine(a || fallbackA || "");
+            const second = compactLine(b || fallbackB || "");
+            if (first && second && first.toLowerCase() !== second.toLowerCase()) {
+                return `${first} / ${second}`;
+            }
+            return first || second;
+        }
+
+        function mergeTwoAnswers(titleA, ansA, titleB, ansB) {
+            const t1 = compactLine(titleA || "Aspect 1");
+            const t2 = compactLine(titleB || "Aspect 2");
+            const a1 = ensureParagraphs(ansA || "");
+            const a2 = ensureParagraphs(ansB || "");
+            const chunks = [];
+            if (a1) chunks.push(`${t1}: ${a1}`);
+            if (a2) chunks.push(`${t2}: ${a2}`);
+            return chunks.join("\n\n").trim();
+        }
+
+        function normalizeReferences(text) {
+            const rawLines = ensureParagraphs(text)
+                .split("\n")
+                .map(line => line.trim())
+                .filter(Boolean)
+                .map(line => line.replace(/^\d+\.\s*/, ""));
+            while (rawLines.length < 5) rawLines.push("Reference details to be updated.");
+            return rawLines.slice(0, 5).map((line, idx) => `${idx + 1}. ${line}`).join("\n");
+        }
+
+        function extractSectionFromClass(classValue) {
+            const cls = compactLine(classValue || "");
+            const match = cls.match(/[-\s]([A-Za-z])$/);
+            return match ? match[1].toUpperCase() : cls;
+        }
+
+        const principleHeading = mergeTwoHeadings(
+            aiData.principleTopic1,
+            aiData.principleTopic2,
+            "Core Principles",
+            "Solution Principles"
+        );
+        const problemSubHeading = mergeTwoHeadings(
+            aiData.problemTopic1,
+            aiData.problemTopic2,
+            "Root Cause Analysis",
+            "Impact Dimensions"
+        );
+        const approachSubHeading = mergeTwoHeadings(
+            aiData.approachTopic1,
+            aiData.approachTopic2,
+            "Primary Approach",
+            "Alternative Approach"
+        );
+        const applicationSubHeading = mergeTwoHeadings(
+            aiData.applicationTopic1,
+            aiData.applicationTopic2,
+            "Operational Application",
+            "Strategic Application"
+        );
+
+        const relatedAnsCombined = mergeTwoAnswers(
+            aiData.problemTopic1,
+            aiData.relatedAns1,
+            aiData.problemTopic2,
+            aiData.relatedAns2
+        );
+        const approachAnsCombined = mergeTwoAnswers(
+            aiData.approachTopic1,
+            aiData.approachRelatedAns1,
+            aiData.approachTopic2,
+            aiData.approachRelatedAns2
+        );
+        const applicationAnsCombined = [
+            ensureParagraphs(aiData.applicationRelatedAnsMain || ""),
+            mergeTwoAnswers(
+                aiData.applicationTopic1,
+                aiData.applicationRelatedAns1,
+                aiData.applicationTopic2,
+                aiData.applicationRelatedAns2
+            )
+        ].filter(Boolean).join("\n\n");
+
+        const docData = {
+            aatNo: compactLine(form.aatNo || form.type || ""),
+            name: compactLine(form.name || ""),
+            rollNo: compactLine(form.rollNo || ""),
+            branch: compactLine(form.class || ""),
+            section: compactLine(form.section || extractSectionFromClass(form.class || "")),
+            semester: compactLine(form.semester || ""),
+            courseCode: compactLine(form.courseCode || ""),
+            faculty: compactLine(form.faculty || form.lecturerName || ""),
+
+            topic: compactLine(topicInput || ps),
+            problemStatement: compactLine(aiData.problemStatement || ps),
+            principleRelatedTopic: principleHeading,
+            problemStatementRelatedTopic: problemSubHeading,
+            relatedTopic: problemSubHeading,
+            differentApproaches: compactLine(aiData.differentApproaches || "Comparative Solution Approaches"),
+            approachRelatedTopic: approachSubHeading,
+            approachRelated: approachSubHeading,
+            appraochRelated: approachSubHeading,
+            application: compactLine(aiData.application || "Applications in Academic Environment"),
+            applicationRelatedTopic: applicationSubHeading,
+            designAndAnalysis: compactLine(aiData.designAndAnalysis || "Design and Impact Analysis"),
+            pageNo: compactLine(aiData.pageNo || "1"),
+
+            introduction: ensureParagraphs(aiData.introduction || ""),
+            useInCampus: ensureParagraphs(aiData.useInCampus || ""),
+            focus: ensureParagraphs(aiData.focus || ""),
+            whyThisTechnique: ensureParagraphs(aiData.whyThisTechnique || ""),
+            observation: ensureParagraphs(aiData.observation || ""),
+            scope: ensureParagraphs(aiData.scope || ""),
+            theory: ensureParagraphs(aiData.theory || ""),
+            background: ensureParagraphs(aiData.background || ""),
+            historicalContext: ensureParagraphs(aiData.historicalContext || ""),
+            theoreticalFramework: ensureParagraphs(aiData.theoreticalFramework || ""),
+            principles: ensureParagraphs(aiData.principles || ""),
+            propertiesOfTopic: ensureParagraphs(aiData.propertiesOfTopic || ""),
+            howItSolves: ensureParagraphs(aiData.howItSolves || ""),
+            state: ensureParagraphs(relatedAnsCombined || ""),
+            relatedAns: ensureParagraphs(relatedAnsCombined || ""),
+            differentApproachesAns: ensureParagraphs(aiData.differentApproachesAns || ""),
+            approachRelatedAns: ensureParagraphs(approachAnsCombined || ""),
+            applicationRelatedAns: ensureParagraphs(applicationAnsCombined || ""),
+            conclusion: ensureParagraphs(aiData.conclusion || ""),
+            references: normalizeReferences(aiData.references || ""),
+
+            courseTitle: compactLine(form.courseTitle || ""),
+            couseTitle: compactLine(form.courseTitle || ""),
+            date: formattedDate
+        };
+
+        const templateBuf = fs.readFileSync(
+            path.join(__dirname, "assets", "CaseStudy_Template.docx"),
+            "binary"
+        );
+        const zip = new PizZip(templateBuf);
+        const doc = new Docxtemplater(zip, {
+            paragraphLoop: true,
+            linebreaks: true
+        });
+        doc.render(docData);
+        const buf = doc.getZip().generate({ type: "nodebuffer", compression: "DEFLATE" });
+
+        const safeName = (form.name || "Student").replace(/[^a-zA-Z0-9_]/g, "_");
+
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            {
+                status: "done",
+                fileName: `${safeName}_CaseStudy.docx`,
+                docBase64: buf.toString("base64")
+            },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+
+        console.log(`[CaseStudy] Done for ${userId}`);
+    } catch (err) {
+        console.error(`[CaseStudy] Failed for ${userId}:`, err.message);
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            { status: "error", message: err.message },
+            10 * 60
+        );
+    } finally {
+        const n = await redis.decr("case_study_active");
+        if (n < 0) await redis.set("case_study_active", "0");
+        await redis.lrem("case_study_processing", 0, userId);
+        console.log(`[CaseStudy] Cleanup success for ${userId}`);
+        processNextCaseStudy().catch(err => console.error("[CaseStudy] next-job error:", err));
+    }
+}
+
+app.get("/case-study-status/:userId", isAuthenticated, async (req, res) => {
+    const { userId } = req.params;
+
+    if (!isOwnUser(req, userId)) {
+        console.warn(`[Auth] Case Study status forbidden for ${req.user.studentId} -> ${userId}`);
+        return res.status(403).json({ error: "Forbidden" });
+    }
+
+    try {
+        recoverStuckCaseStudy().catch(console.error);
+        processNextCaseStudy().catch(console.error);
+        const data = await getRedisJson(`case_study_result:${userId}`);
+        if (!data) {
+            const queuePos = await redis.lpos("case_study_queue", userId);
+            const processingPos = await redis.lpos("case_study_processing", userId);
+
+            if (queuePos !== null) {
+                await setRedisJson(
+                    `case_study_result:${userId}`,
+                    { status: "waiting", position: queuePos + 1 },
+                    EFFECTIVE_CASE_STUDY_TTL
+                );
+                return res.json({ status: "waiting", position: queuePos + 1 });
+            }
+
+            if (processingPos !== null) {
+                await setRedisJson(
+                    `case_study_result:${userId}`,
+                    { status: "generating", startedAt: Date.now() },
+                    EFFECTIVE_CASE_STUDY_TTL
+                );
+                return res.json({ status: "generating" });
+            }
+
+            return res.json({ status: "not_found" });
+        }
+
+        if (data.status === "waiting") {
+            const queuePos = await redis.lpos("case_study_queue", userId);
+            const processingPos = await redis.lpos("case_study_processing", userId);
+
+            if (queuePos === null && processingPos === null) {
+                console.warn(`[CaseStudyStatus] Re-queueing lost waiting job for ${userId}`);
+                await redis.rpush("case_study_queue", userId);
+                await refreshCaseStudyQueuePositions();
+                processNextCaseStudy().catch(console.error);
+                const repaired = await getRedisJson(`case_study_result:${userId}`);
+                return res.json(repaired || { status: "waiting", position: 1 });
+            }
+
+            return res.json({
+                ...data,
+                position: queuePos === null ? data.position || 1 : queuePos + 1
+            });
+        }
+
+        if (data.status === "generating") {
+            const processingPos = await redis.lpos("case_study_processing", userId);
+            if (processingPos === null) {
+                console.warn(`[CaseStudyStatus] Generating job missing from processing for ${userId}, forcing recovery`);
+                recoverStuckCaseStudy().catch(console.error);
+                processNextCaseStudy().catch(console.error);
+            }
+        }
+
+        if (data.status === "done") return res.json({ status: "done", fileName: data.fileName });
+        return res.json(data);
+    } catch (err) {
+        console.error("[CaseStudy] Status error:", err);
+        return res.status(500).json({ error: "Status check failed." });
+    }
+});
+
+// ─── Case Study Download ──────────────────────────────────────────────────────
+app.get("/download-case-study/:userId", isAuthenticated, async (req, res) => {
+    const { userId } = req.params;
+
+    if (!isOwnUser(req, userId)) {
+        console.warn(`[Auth] Case Study download forbidden for ${req.user.studentId} -> ${userId}`);
+        return res.status(403).send("Forbidden");
+    }
+
+    try {
+        const data = await getRedisJson(`case_study_result:${userId}`);
+        if (!data) return res.status(404).send("Document not found. Please generate again.");
+        if (data.status !== "done") return res.status(400).send("Document not ready yet.");
+
+        const buf      = Buffer.from(data.docBase64, "base64");
+        const fileName = data.fileName || `${userId}_CaseStudy.docx`;
+
+        res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        res.send(buf);
+
+        await redis.del(`case_study_result:${userId}`);
+        await redis.del(`case_study_form:${userId}`);
+        console.log(`[CaseStudy] Download success for ${userId}`);
+    } catch (err) {
+        console.error("[CaseStudy] Download error:", err);
+        res.status(500).send("Download failed: " + err.message);
+    }
+});
+
+// ─── Case Study Form Page ─────────────────────────────────────────────────────
+app.get("/case-study", isAuthenticated, (req, res) => {
+    res.render("case-study", { user: req.user });
+});
+
+// ─── Case Study Queue Waiting Page ────────────────────────────────────────────
+app.get("/case-study-queue", isAuthenticated, (req, res) => {
+    res.render("case-study-queue", { user: req.user });
+});
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 8080;
 
