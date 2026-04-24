@@ -2776,6 +2776,10 @@ Return ONLY a valid JSON object with these exact keys and plain string values:
   "applicationRelatedAnsMain": "Paragraph on overall application",
   "applicationRelatedAns1": "Paragraph answering application subsection 1",
   "applicationRelatedAns2": "Paragraph answering application subsection 2",
+  "applicationRelatedAns3": "Paragraph covering a third application subsection or real-world example.",
+  "designAndAnalysisRelatedAns": "Paragraph describing the design approach and analysis outcomes for section 7.",
+  "problemStatementBrief": "One concise paragraph (3-4 sentences) briefly summarising the problem statement for the introduction section.",
+  "problemStatementSummary": "One short paragraph (2-3 sentences) summarising the problem statement at the start of section 4.",
   "conclusion": "Final conclusion paragraph",
   "references": "Exactly 5 numbered research-paper references in this format: 1. ...\n2. ...\n3. ...\n4. ...\n5. ..."
 }
@@ -2836,52 +2840,7 @@ CRITICAL RULES:
             return match ? match[1].toUpperCase() : cls;
         }
 
-        const principleHeading = mergeTwoHeadings(
-            aiData.principleTopic1,
-            aiData.principleTopic2,
-            "Core Principles",
-            "Solution Principles"
-        );
-        const problemSubHeading = mergeTwoHeadings(
-            aiData.problemTopic1,
-            aiData.problemTopic2,
-            "Root Cause Analysis",
-            "Impact Dimensions"
-        );
-        const approachSubHeading = mergeTwoHeadings(
-            aiData.approachTopic1,
-            aiData.approachTopic2,
-            "Primary Approach",
-            "Alternative Approach"
-        );
-        const applicationSubHeading = mergeTwoHeadings(
-            aiData.applicationTopic1,
-            aiData.applicationTopic2,
-            "Operational Application",
-            "Strategic Application"
-        );
-
-        const relatedAnsCombined = mergeTwoAnswers(
-            aiData.problemTopic1,
-            aiData.relatedAns1,
-            aiData.problemTopic2,
-            aiData.relatedAns2
-        );
-        const approachAnsCombined = mergeTwoAnswers(
-            aiData.approachTopic1,
-            aiData.approachRelatedAns1,
-            aiData.approachTopic2,
-            aiData.approachRelatedAns2
-        );
-        const applicationAnsCombined = [
-            ensureParagraphs(aiData.applicationRelatedAnsMain || ""),
-            mergeTwoAnswers(
-                aiData.applicationTopic1,
-                aiData.applicationRelatedAns1,
-                aiData.applicationTopic2,
-                aiData.applicationRelatedAns2
-            )
-        ].filter(Boolean).join("\n\n");
+        // ── Individual answer paragraphs are mapped directly in docData below ──
 
         const docData = {
             aatNo: compactLine(form.aatNo || form.type || ""),
@@ -2895,21 +2854,36 @@ CRITICAL RULES:
 
             topic: compactLine(topicInput || ps),
             problemStatement: compactLine(aiData.problemStatement || ps),
-            principleRelatedTopic: principleHeading,
-            problemStatementRelatedTopic: problemSubHeading,
-            relatedTopic: problemSubHeading,
-            differentApproaches: compactLine(aiData.differentApproaches || "Comparative Solution Approaches"),
-            approachRelatedTopic: approachSubHeading,
-            approachRelated: approachSubHeading,
-            appraochRelated: approachSubHeading,
-            application: compactLine(aiData.application || "Applications in Academic Environment"),
-            applicationRelatedTopic: applicationSubHeading,
-            designAndAnalysis: compactLine(aiData.designAndAnalysis || "Design and Impact Analysis"),
-            pageNo: compactLine(aiData.pageNo || "1"),
 
+            // ── Section headings (split into numbered variants for template) ──
+            principleRelatedTopic1: compactLine(aiData.principleTopic1 || "Core Principles"),
+            principleRelatedTopic2: compactLine(aiData.principleTopic2 || "Solution Principles"),
+            problemStatementRelatedTopic1: compactLine(aiData.problemTopic1 || "Root Cause Analysis"),
+            problemStatementRelatedTopic2: compactLine(aiData.problemTopic2 || "Impact Dimensions"),
+            relatedTopic1: compactLine(aiData.problemTopic1 || "Root Cause Analysis"),
+            relatedTopic2: compactLine(aiData.problemTopic2 || "Impact Dimensions"),
+            differentApproaches: compactLine(aiData.differentApproaches || "Comparative Solution Approaches"),
+            approachRelatedTopic1: compactLine(aiData.approachTopic1 || "Primary Approach"),
+            approachRelatedTopic2: compactLine(aiData.approachTopic2 || "Alternative Approach"),
+            appraochRelated1: compactLine(aiData.approachTopic1 || "Primary Approach"),   // template typo kept
+            approachRelated2: compactLine(aiData.approachTopic2 || "Alternative Approach"),
+            application: compactLine(aiData.application || "Applications in Academic Environment"),
+            applicationRelatedTopic1: compactLine(aiData.applicationTopic1 || "Operational Application"),
+            applicationRelatedTopic2: compactLine(aiData.applicationTopic2 || "Strategic Application"),
+            designAndAnalysis: compactLine(aiData.designAndAnalysis || "Design and Impact Analysis"),
+
+            // ── Page numbers (template has pageNo1..pageNo21, all default to "1") ──
+            pageNo1: "1", pageNo2: "1", pageNo3: "1", pageNo4: "1", pageNo5: "1",
+            pageNo6: "1", pageNo7: "1", pageNo8: "1", pageNo9: "1", pageNo10: "1",
+            pageNo11: "1", pageNo12: "1", pageNo13: "1", pageNo14: "1", pageNo15: "1",
+            pageNo16: "1", pageNo17: "1", pageNo18: "1", pageNo19: "1", pageNo20: "1",
+            pageNo21: "1",
+
+            // ── Section content ──
             introduction: ensureParagraphs(aiData.introduction || ""),
             useInCampus: ensureParagraphs(aiData.useInCampus || ""),
             focus: ensureParagraphs(aiData.focus || ""),
+            problemStatementBrief: ensureParagraphs(aiData.problemStatementBrief || aiData.problemStatement || ps),
             whyThisTechnique: ensureParagraphs(aiData.whyThisTechnique || ""),
             observation: ensureParagraphs(aiData.observation || ""),
             scope: ensureParagraphs(aiData.scope || ""),
@@ -2920,11 +2894,16 @@ CRITICAL RULES:
             principles: ensureParagraphs(aiData.principles || ""),
             propertiesOfTopic: ensureParagraphs(aiData.propertiesOfTopic || ""),
             howItSolves: ensureParagraphs(aiData.howItSolves || ""),
-            state: ensureParagraphs(relatedAnsCombined || ""),
-            relatedAns: ensureParagraphs(relatedAnsCombined || ""),
-            differentApproachesAns: ensureParagraphs(aiData.differentApproachesAns || ""),
-            approachRelatedAns: ensureParagraphs(approachAnsCombined || ""),
-            applicationRelatedAns: ensureParagraphs(applicationAnsCombined || ""),
+            problemStatementSummary: ensureParagraphs(aiData.problemStatementSummary || aiData.problemStatement || ps),
+            relatedAns1: ensureParagraphs(aiData.relatedAns1 || ""),
+            relatedAns2: ensureParagraphs(aiData.relatedAns2 || ""),
+            differentApproachesAns1: ensureParagraphs(aiData.differentApproachesAns || ""),
+            approachRelatedAns1: ensureParagraphs(aiData.approachRelatedAns1 || ""),
+            approachRelatedAns2: ensureParagraphs(aiData.approachRelatedAns2 || ""),
+            applicationRelatedAns1: ensureParagraphs(aiData.applicationRelatedAns1 || ""),
+            applicationRelatedAns2: ensureParagraphs(aiData.applicationRelatedAns2 || ""),
+            applicationRelatedAns3: ensureParagraphs(aiData.applicationRelatedAns3 || ""),
+            designAndAnalysisRelatedAns: ensureParagraphs(aiData.designAndAnalysisRelatedAns || ""),
             conclusion: ensureParagraphs(aiData.conclusion || ""),
             references: normalizeReferences(aiData.references || ""),
 
