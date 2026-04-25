@@ -2714,6 +2714,103 @@ async function processNextCaseStudy() {
     }
 }
 
+// ─── Helper: Calculate dynamic page numbers based on AI-generated content ──────
+// pageNoX = the END page (last page) of each section in the TOC.
+// Main section headings (1, 2, 3...) accumulate all their subsections.
+// Subsection page numbers are the end page of just that subsection.
+function generateDynamicPageNumbers(aiData) {
+    const WORDS_PER_PAGE = 250; // ~250 words per page in 12pt Word doc with margins
+
+    function wc(text) {
+        if (!text) return 0;
+        return String(text).replace(/\n/g, " ").trim().split(/\s+/).length;
+    }
+
+    function pages(text) {
+        return Math.max(1, Math.ceil(wc(text) / WORDS_PER_PAGE));
+    }
+
+    // Reserve page 1 for cover + TOC
+    let p = 1;
+
+    // ── Section 1: Introduction ─────────────────────────────────────────────
+    const p_intro        = p + pages(aiData.introduction);       p = p_intro;
+    const p_useInCampus  = p + pages(aiData.useInCampus);        p = p_useInCampus;
+    const p_focus        = p + pages(aiData.focus);              p = p_focus;
+    const p_psBrief      = p + pages(aiData.problemStatementBrief); p = p_psBrief;
+    const p_why          = p + pages(aiData.whyThisTechnique);   p = p_why;
+    const p_obs          = p + pages(aiData.observation);        p = p_obs;
+    const p_scope        = p + pages(aiData.scope);              p = p_scope;
+    const p_sec1_end     = p_scope; // Section 1 ends at scope
+
+    // ── Section 2: Theory ──────────────────────────────────────────────────
+    const p_theory       = p + pages(aiData.theory);             p = p_theory;
+    const p_bg           = p + pages(aiData.background);         p = p_bg;
+    const p_hist         = p + pages(aiData.historicalContext);  p = p_hist;
+    const p_framework    = p + pages(aiData.theoreticalFramework); p = p_framework;
+    const p_sec2_end     = p_framework;
+
+    // ── Section 3: Principles ─────────────────────────────────────────────
+    const p_principles   = p + pages(aiData.principles);         p = p_principles;
+    const p_props        = p + pages(aiData.propertiesOfTopic);  p = p_props;
+    const p_howsolves    = p + pages(aiData.howItSolves);        p = p_howsolves;
+    const p_sec3_end     = p_howsolves;
+
+    // ── Section 4: Problem Statement ─────────────────────────────────────
+    const p_psSummary    = p + pages(aiData.problemStatementSummary); p = p_psSummary;
+    const p_related1     = p + pages(aiData.relatedAns1);        p = p_related1;
+    const p_related2     = p + pages(aiData.relatedAns2);        p = p_related2;
+    const p_sec4_end     = p_related2;
+
+    // ── Section 5: Different Approaches ─────────────────────────────────
+    const p_diffApproach = p + pages(aiData.differentApproachesAns); p = p_diffApproach;
+    const p_app1         = p + pages(aiData.approachRelatedAns1); p = p_app1;
+    const p_app2         = p + pages(aiData.approachRelatedAns2); p = p_app2;
+    const p_sec5_end     = p_app2;
+
+    // ── Section 6: Applications ──────────────────────────────────────────
+    const p_appMain      = p + pages(aiData.applicationRelatedAnsMain); p = p_appMain;
+    const p_appT1        = p + pages(aiData.applicationRelatedAns1); p = p_appT1;
+    const p_appT2        = p + pages(aiData.applicationRelatedAns2); p = p_appT2;
+    const p_appT3        = p + pages(aiData.applicationRelatedAns3); p = p_appT3;
+    const p_sec6_end     = p_appT3;
+
+    // ── Section 7: Design and Analysis ──────────────────────────────────
+    const p_design       = p + pages(aiData.designAndAnalysisRelatedAns); p = p_design;
+    const p_sec7_end     = p_design;
+
+    // ── Conclusion + References ──────────────────────────────────────────
+    const p_conclusion   = p + pages(aiData.conclusion);         p = p_conclusion;
+    const p_references   = p + pages(aiData.references);
+
+    return {
+        // Main section headings → end page of entire section (TOC right column)
+        pageNo1:  String(p_sec1_end),    // Section 1 end
+        pageNo8:  String(p_sec2_end),    // Section 2 end
+        pageNo10: String(p_sec3_end),    // Section 3 end
+        pageNo12: String(p_sec4_end),    // Section 4 end
+        pageNo14: String(p_sec5_end),    // Section 5 end
+        pageNo16: String(p_sec6_end),    // Section 6 end
+        pageNo19: String(p_sec7_end),    // Section 7 end
+        pageNo20: String(p_conclusion),  // Conclusion
+        pageNo21: String(p_references),  // References
+
+        // Subsection page numbers → end page of that subsection
+        pageNo2:  String(p_useInCampus),
+        pageNo3:  String(p_focus),
+        pageNo4:  String(p_psBrief),
+        pageNo5:  String(p_why),
+        pageNo6:  String(p_obs),
+        pageNo7:  String(p_scope),
+        pageNo9:  String(p_framework),   // end of 2.1 + 2.2
+        pageNo11: String(p_howsolves),   // end of 3.1 + 3.2
+        pageNo13: String(p_related2),    // end of 4.1 + 4.2
+        pageNo15: String(p_app2),        // end of 5.1 + 5.2
+        pageNo17: String(p_appT2),       // end of 6.1 + 6.2
+        pageNo18: String(p_appT3),       // 6.3 subsection
+    };
+}
+
 // ─── Run one Case Study generation job ────────────────────────────────────────
 async function runCaseStudyJob(userId) {
     try {
@@ -2733,62 +2830,75 @@ async function runCaseStudyJob(userId) {
         });
 
         const prompt = `
-You are an expert academic case-study writer for engineering students.
+You are an expert academic case-study writer for engineering students at a university level.
 
-Generate content for a university case study report for:
+Generate DETAILED, LENGTHY, and ACADEMICALLY RICH content for a university case study report.
+
 Topic: "${topicInput}"
 Problem Statement: "${ps}"
-Institute context: "IARE (Institute of Aeronautical Engineering)"
+Institute context: "IARE (Institute of Aeronautical Engineering), Hyderabad"
 
-Return ONLY a valid JSON object with these exact keys and plain string values:
+Return ONLY a valid JSON object with these exact keys and plain string values.
+No markdown, no asterisks, no bullet symbols. Use \\n to separate sentences/points within a value.
+
+CONTENT LENGTH REQUIREMENTS — STRICTLY FOLLOW:
+- Short headings: 3-9 words
+- problemStatement: exactly 1 sentence, 12-20 words
+- Brief paragraphs (problemStatementBrief, problemStatementSummary): 4-5 sentences
+- Standard paragraphs (introduction, useInCampus, focus, whyThisTechnique, observation, scope, theory, background, historicalContext, theoreticalFramework, principles, propertiesOfTopic, howItSolves, conclusion): 8-10 sentences each. Separate each sentence with \\n.
+- Answer paragraphs (relatedAns1, relatedAns2, differentApproachesAns, approachRelatedAns1, approachRelatedAns2, applicationRelatedAnsMain, applicationRelatedAns1, applicationRelatedAns2, applicationRelatedAns3, designAndAnalysisRelatedAns): 7-9 sentences each. Separate each sentence with \\n.
+- references: Exactly 5 numbered lines. Each reference must be a real-format academic citation. Format: 1. Author(s), "Title," Journal/Conference, Year.\\n2. ...\\n3. ...\\n4. ...\\n5. ...
+
 {
-  "problemStatement": "One concise sentence (12-18 words) describing the central problem. It must work in both heading and summary contexts.",
-  "principleTopic1": "Short side heading (3-7 words) for principles section",
-  "principleTopic2": "Another short side heading (3-7 words) for principles section",
-  "problemTopic1": "Short side heading (3-7 words) for problem subsection",
-  "problemTopic2": "Another short side heading (3-7 words) for problem subsection",
-  "differentApproaches": "A short heading (4-9 words) for section 5",
-  "approachTopic1": "Short side heading (3-7 words) for approach subsection",
-  "approachTopic2": "Another short side heading (3-7 words) for approach subsection",
-  "application": "A short heading (3-8 words) for applications section",
-  "applicationTopic1": "Short side heading (3-7 words) for applications subsection",
-  "applicationTopic2": "Another short side heading (3-7 words) for applications subsection",
-  "designAndAnalysis": "A short heading (4-9 words) for section 7",
-  "pageNo": "Use a simple repeated value such as '1'",
-  "introduction": "Paragraph about topic introduction",
-  "useInCampus": "Paragraph on usage in IARE campus context",
-  "focus": "Paragraph on the focus and solution direction",
-  "whyThisTechnique": "Paragraph on why this technique/solution is chosen",
-  "observation": "Paragraph on observations from the problem context",
-  "scope": "Paragraph on solution scope and boundaries",
-  "theory": "Paragraph on core theory related to topic + problem",
-  "background": "Paragraph on background and prerequisites",
-  "historicalContext": "Paragraph on historical context",
-  "theoreticalFramework": "Paragraph on framework/model used",
-  "principles": "Paragraph explaining main principles",
-  "propertiesOfTopic": "Paragraph on properties relevant to solving the problem",
-  "howItSolves": "Paragraph explaining how the solution addresses the problem",
-  "relatedAns1": "Paragraph answering problem subsection 1",
-  "relatedAns2": "Paragraph answering problem subsection 2",
-  "differentApproachesAns": "Paragraph summarizing multiple approaches",
-  "approachRelatedAns1": "Paragraph answering approach subsection 1",
-  "approachRelatedAns2": "Paragraph answering approach subsection 2",
-  "applicationRelatedAnsMain": "Paragraph on overall application",
-  "applicationRelatedAns1": "Paragraph answering application subsection 1",
-  "applicationRelatedAns2": "Paragraph answering application subsection 2",
-  "applicationRelatedAns3": "Paragraph covering a third application subsection or real-world example.",
-  "designAndAnalysisRelatedAns": "Paragraph describing the design approach and analysis outcomes for section 7.",
-  "problemStatementBrief": "One concise paragraph (3-4 sentences) briefly summarising the problem statement for the introduction section.",
-  "problemStatementSummary": "One short paragraph (2-3 sentences) summarising the problem statement at the start of section 4.",
-  "conclusion": "Final conclusion paragraph",
-  "references": "Exactly 5 numbered research-paper references in this format: 1. ...\n2. ...\n3. ...\n4. ...\n5. ..."
+  "problemStatement": "ONE sentence 12-20 words summarising the core problem for use as both heading and body summary.",
+  "principleTopic1": "Short side heading (3-7 words) for principles subsection 1",
+  "principleTopic2": "Short side heading (3-7 words) for principles subsection 2",
+  "problemTopic1": "Short side heading (3-7 words) for problem subsection 4.1",
+  "problemTopic2": "Short side heading (3-7 words) for problem subsection 4.2",
+  "differentApproaches": "Short heading (4-9 words) for section 5 — different approaches to solving the problem",
+  "approachTopic1": "Short side heading (3-7 words) for approach subsection 5.1",
+  "approachTopic2": "Short side heading (3-7 words) for approach subsection 5.2",
+  "application": "Short heading (3-8 words) for applications section 6",
+  "applicationTopic1": "Short side heading (3-7 words) for application subsection 6.1",
+  "applicationTopic2": "Short side heading (3-7 words) for application subsection 6.2",
+  "designAndAnalysis": "Short heading (4-9 words) for design and analysis section 7",
+  "introduction": "8-10 sentences introducing the topic, engineering context, importance, and relevance. Each sentence on its own line separated by \\n.",
+  "useInCampus": "8-10 sentences on specific, practical usage of this topic/solution at IARE campus (labs, departments, research, courses). Each sentence on new line via \\n.",
+  "focus": "8-10 sentences on the focus of the case study — what aspect of the topic is being studied and why. Each sentence separated by \\n.",
+  "problemStatementBrief": "4-5 sentences briefly summarising the problem statement for the introduction section. Sentences separated by \\n.",
+  "whyThisTechnique": "8-10 sentences explaining the reasoning behind choosing this specific technique or solution approach over alternatives. Separate with \\n.",
+  "observation": "8-10 sentences presenting observations made from analysing the problem, data patterns, and contextual factors. Separate with \\n.",
+  "scope": "8-10 sentences defining what the solution covers and what it does not — boundaries, scale, assumptions. Separate with \\n.",
+  "theory": "8-10 sentences explaining the core theoretical concepts underpinning the topic and its relevance to solving the problem. Separate with \\n.",
+  "background": "8-10 sentences on the background, prerequisites, and foundational knowledge needed. Separate with \\n.",
+  "historicalContext": "8-10 sentences covering the historical evolution and development of the topic. Separate with \\n.",
+  "theoreticalFramework": "8-10 sentences describing the theoretical models, frameworks, or algorithms being applied. Separate with \\n.",
+  "principles": "8-10 sentences explaining the key technical and scientific principles of the topic. Separate with \\n.",
+  "propertiesOfTopic": "8-10 sentences on the properties, characteristics, and attributes of the topic relevant to the problem. Separate with \\n.",
+  "howItSolves": "8-10 sentences explaining step-by-step how the technique/solution addresses the problem statement. Separate with \\n.",
+  "problemStatementSummary": "4-5 sentences summarising the problem at the start of section 4. Separate with \\n.",
+  "relatedAns1": "7-9 detailed sentences answering the first problem subsection heading. Separate with \\n.",
+  "relatedAns2": "7-9 detailed sentences answering the second problem subsection heading. Separate with \\n.",
+  "differentApproachesAns": "7-9 sentences summarising the different approaches considered for solving this problem. Separate with \\n.",
+  "approachRelatedAns1": "7-9 sentences explaining approach subsection 1 in detail. Separate with \\n.",
+  "approachRelatedAns2": "7-9 sentences explaining approach subsection 2 in detail. Separate with \\n.",
+  "applicationRelatedAnsMain": "7-9 sentences describing the overall application of the solution in real-world and academic contexts. Separate with \\n.",
+  "applicationRelatedAns1": "7-9 sentences for application subsection 6.1. Separate with \\n.",
+  "applicationRelatedAns2": "7-9 sentences for application subsection 6.2. Separate with \\n.",
+  "applicationRelatedAns3": "7-9 sentences for an additional real-world application example. Separate with \\n.",
+  "designAndAnalysisRelatedAns": "7-9 sentences on the design approach, implementation decisions, and analysis outcomes for section 7. Separate with \\n.",
+  "conclusion": "8-10 sentences concluding the case study — summarise findings, significance, and implications. Separate with \\n.",
+  "references": "Exactly 5 academic reference citations. Format: 1. Author(s), Title, Journal/Conference, Year.\\n2. ...\\n3. ...\\n4. ...\\n5. ..."
 }
 
-CRITICAL RULES:
-- Use literal \\n where line separation is needed.
-- Do not use markdown symbols.
-- Keep content formal, clear, and academically meaningful.
-- Keep all headings concise and title-friendly.
+ABSOLUTE RULES:
+- Every paragraph field MUST have at least 7 sentences. Do not write less.
+- Use \\n to put each sentence on its own line inside the JSON string.
+- Do NOT use actual newlines inside JSON strings.
+- Do NOT use markdown (no **, no ##, no - bullets, no • symbols).
+- Keep all heading fields short and title-friendly (no full stops).
+- Content must be specific to the topic and problem statement — no generic filler.
+- Write in formal academic English.
 `;
 
         const aiResult = await generateWithFallback(m => m.generateContent(prompt), true);
@@ -2798,10 +2908,53 @@ CRITICAL RULES:
             return String(text || "").replace(/\s+/g, " ").trim();
         }
 
+        // Enforce short TOC headings: max 6 words, no trailing punctuation
+        function tocHeading(text, maxWords = 6) {
+            const clean = compactLine(text || "")
+                .replace(/[.!?;:]$/, "")   // strip trailing punctuation
+                .replace(/^(A |An |The )/i, ""); // strip leading articles
+            const words = clean.split(" ");
+            if (words.length <= maxWords) return clean;
+            // Try to find a natural break at a preposition/conjunction
+            const stopAt = ["of", "in", "for", "and", "the", "with", "to", "by", "at"];
+            for (let i = Math.min(words.length - 1, maxWords); i >= 3; i--) {
+                if (stopAt.includes(words[i].toLowerCase())) {
+                    return words.slice(0, i).join(" ");
+                }
+            }
+            return words.slice(0, maxWords).join(" ");
+        }
+
+        // ── ensureParagraphs ─────────────────────────────────────────────────────
+        // Converts AI output into clean paragraph text for Docxtemplater.
+        // 
+        // ROOT CAUSE of word-spacing bug:
+        //   Docxtemplater linebreaks:true converts \n → <w:br/> (soft line break
+        //   inside one <w:p>). When that paragraph is justified, Word stretches the
+        //   few words on each short line edge-to-edge → huge gaps.
+        //
+        // FIX: collapse all \n into a single space so each section becomes ONE
+        //   continuous justified paragraph. Word justifies a full paragraph cleanly.
+        //   Only \n\n (explicit section break) becomes a real paragraph break.
         function ensureParagraphs(text) {
-            const value = String(text || "").replace(/\r/g, "").trim();
+            let value = String(text || "").replace(/\r/g, "").trim();
             if (!value) return "";
-            return value.replace(/\n{3,}/g, "\n\n");
+
+            // Normalise line endings
+            value = value.replace(/\r\n/g, "\n");
+
+            // Collapse 3+ newlines to double (intentional paragraph break)
+            value = value.replace(/\n{3,}/g, "\n\n");
+
+            // Collapse single \n (sentence breaks) into a space — this is the key fix.
+            // Single \n becomes <w:br/> which breaks justified layout.
+            // One continuous paragraph justifies cleanly.
+            value = value.replace(/(?<!\n)\n(?!\n)/g, " ");
+
+            // Clean up any double spaces introduced
+            value = value.replace(/ {2,}/g, " ");
+
+            return value.trim();
         }
 
         function mergeTwoHeadings(a, b, fallbackA, fallbackB) {
@@ -2825,13 +2978,20 @@ CRITICAL RULES:
         }
 
         function normalizeReferences(text) {
-            const rawLines = ensureParagraphs(text)
+            // Split on newlines or on "2." "3." etc that run together without newline
+            let raw = String(text || "").replace(/\r/g, "").trim();
+            // Insert newline before each numbered item if not already separated
+            raw = raw.replace(/(?<=[.!?\w])\s+(?=\d+\.\s)/g, "\n");
+            const rawLines = raw
                 .split("\n")
                 .map(line => line.trim())
                 .filter(Boolean)
-                .map(line => line.replace(/^\d+\.\s*/, ""));
+                .map(line => line.replace(/^\d+\.\s*/, "").trim())
+                .filter(Boolean);
             while (rawLines.length < 5) rawLines.push("Reference details to be updated.");
-            return rawLines.slice(0, 5).map((line, idx) => `${idx + 1}. ${line}`).join("\n");
+            // Join with \n\n so Docxtemplater (linebreaks:true) creates a new
+            // paragraph for each reference — no stretched justification, clean layout
+            return rawLines.slice(0, 5).map((line, idx) => `${idx + 1}. ${line}`).join("\n\n");
         }
 
         function extractSectionFromClass(classValue) {
@@ -2855,29 +3015,25 @@ CRITICAL RULES:
             topic: compactLine(topicInput || ps),
             problemStatement: compactLine(aiData.problemStatement || ps),
 
-            // ── Section headings (split into numbered variants for template) ──
-            principleRelatedTopic1: compactLine(aiData.principleTopic1 || "Core Principles"),
-            principleRelatedTopic2: compactLine(aiData.principleTopic2 || "Solution Principles"),
-            problemStatementRelatedTopic1: compactLine(aiData.problemTopic1 || "Root Cause Analysis"),
-            problemStatementRelatedTopic2: compactLine(aiData.problemTopic2 || "Impact Dimensions"),
-            relatedTopic1: compactLine(aiData.problemTopic1 || "Root Cause Analysis"),
-            relatedTopic2: compactLine(aiData.problemTopic2 || "Impact Dimensions"),
-            differentApproaches: compactLine(aiData.differentApproaches || "Comparative Solution Approaches"),
-            approachRelatedTopic1: compactLine(aiData.approachTopic1 || "Primary Approach"),
-            approachRelatedTopic2: compactLine(aiData.approachTopic2 || "Alternative Approach"),
-            appraochRelated1: compactLine(aiData.approachTopic1 || "Primary Approach"),   // template typo kept
-            approachRelated2: compactLine(aiData.approachTopic2 || "Alternative Approach"),
-            application: compactLine(aiData.application || "Applications in Academic Environment"),
-            applicationRelatedTopic1: compactLine(aiData.applicationTopic1 || "Operational Application"),
-            applicationRelatedTopic2: compactLine(aiData.applicationTopic2 || "Strategic Application"),
-            designAndAnalysis: compactLine(aiData.designAndAnalysis || "Design and Impact Analysis"),
+            // ── Section headings — enforced short via tocHeading() (max 6 words) ──
+            principleRelatedTopic1:       tocHeading(aiData.principleTopic1    || "Core Principles"),
+            principleRelatedTopic2:       tocHeading(aiData.principleTopic2    || "Solution Principles"),
+            problemStatementRelatedTopic1:tocHeading(aiData.problemTopic1      || "Root Cause Analysis"),
+            problemStatementRelatedTopic2:tocHeading(aiData.problemTopic2      || "Impact Dimensions"),
+            relatedTopic1:                tocHeading(aiData.problemTopic1      || "Root Cause Analysis"),
+            relatedTopic2:                tocHeading(aiData.problemTopic2      || "Impact Dimensions"),
+            differentApproaches:          tocHeading(aiData.differentApproaches|| "Comparative Approaches", 5),
+            approachRelatedTopic1:        tocHeading(aiData.approachTopic1     || "Primary Approach"),
+            approachRelatedTopic2:        tocHeading(aiData.approachTopic2     || "Alternative Approach"),
+            appraochRelated1:             tocHeading(aiData.approachTopic1     || "Primary Approach"),   // template typo
+            approachRelated2:             tocHeading(aiData.approachTopic2     || "Alternative Approach"),
+            application:                  tocHeading(aiData.application        || "Real World Applications", 5),
+            applicationRelatedTopic1:     tocHeading(aiData.applicationTopic1  || "Operational Application"),
+            applicationRelatedTopic2:     tocHeading(aiData.applicationTopic2  || "Strategic Application"),
+            designAndAnalysis:            tocHeading(aiData.designAndAnalysis  || "Design and Analysis", 5),
 
-            // ── Page numbers (template has pageNo1..pageNo21, all default to "1") ──
-            pageNo1: "1", pageNo2: "1", pageNo3: "1", pageNo4: "1", pageNo5: "1",
-            pageNo6: "1", pageNo7: "1", pageNo8: "1", pageNo9: "1", pageNo10: "1",
-            pageNo11: "1", pageNo12: "1", pageNo13: "1", pageNo14: "1", pageNo15: "1",
-            pageNo16: "1", pageNo17: "1", pageNo18: "1", pageNo19: "1", pageNo20: "1",
-            pageNo21: "1",
+            // ── Dynamic page numbers based on content length ──
+            ...generateDynamicPageNumbers(aiData),
 
             // ── Section content ──
             introduction: ensureParagraphs(aiData.introduction || ""),
@@ -2907,8 +3063,11 @@ CRITICAL RULES:
             conclusion: ensureParagraphs(aiData.conclusion || ""),
             references: normalizeReferences(aiData.references || ""),
 
-            courseTitle: compactLine(form.courseTitle || ""),
-            couseTitle: compactLine(form.courseTitle || ""),
+            // Try every field name the form might send for course title
+            // Template uses {state} for course title field — map it here
+            courseTitle: compactLine(form.courseTitle || form.courseName || form.couseTitle || form.course || ""),
+            couseTitle:  compactLine(form.courseTitle || form.courseName || form.couseTitle || form.course || ""),
+            state:       compactLine(form.courseTitle || form.courseName || form.couseTitle || form.course || ""),
             date: formattedDate
         };
 
