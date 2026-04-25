@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="/images/CheatCodeIARE.png">
+    <script>
+        (function () {
+            const theme = localStorage.getItem('cheatcode-theme');
+            const normalized = theme === 'light' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = normalized;
+            document.documentElement.style.colorScheme = normalized;
+        })();
+    </script>
+    <title>Generating Case Study Doc - CheatCodeIARE</title>
+    <link rel="stylesheet" href="/styles/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #050505;
+            font-family: 'Poppins', sans-serif;
+            color: #fff;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .queue-card {
+            background: rgba(255,255,255,0.02);
+            border: 2px solid #39ff14;
+            border-radius: 16px;
+            padding: 50px 60px;
+            max-width: 520px;
+            width: 100%;
+            box-shadow: 0 0 40px rgba(57, 255, 20, 0.1);
+        }
+
+        .queue-icon {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50%       { opacity: 0.6; transform: scale(1.08); }
+        }
+
+        .queue-title {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.3rem;
+            color: #39ff14;
+            text-shadow: 0 0 12px #39ff14;
+            margin-bottom: 10px;
+            letter-spacing: 2px;
+        }
+
+        .queue-subtitle {
+            color: #888;
+            font-size: 0.9rem;
+            margin-bottom: 36px;
+            line-height: 1.6;
+        }
+
+        .status-box {
+            background: #0d0d0d;
+            border: 1px solid #222;
+            border-radius: 10px;
+            padding: 20px 24px;
+            margin-bottom: 28px;
+        }
+
+        .status-label {
+            font-size: 0.72rem;
+            color: #555;
+            font-family: 'Orbitron', sans-serif;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .status-value {
+            font-size: 1.6rem;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+        }
+
+        .status-value.waiting    { color: #39ff14; text-shadow: 0 0 10px rgba(57,255,20,0.4); }
+        .status-value.generating { color: #39ff14; text-shadow: 0 0 10px rgba(57,255,20,0.5); }
+        .status-value.done       { color: #39ff14; text-shadow: 0 0 10px rgba(57,255,20,0.4); }
+        .status-value.error      { color: #ff4444; }
+
+        .dots {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin: 20px 0;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #222;
+            transition: background 0.3s;
+        }
+
+        .dot.active { background: #39ff14; box-shadow: 0 0 8px #39ff14; }
+
+        .position-text {
+            font-size: 0.88rem;
+            color: #666;
+            margin-top: 8px;
+        }
+
+        .position-text span { color: #39ff14; font-weight: 600; }
+
+        .spinner {
+            display: none;
+            width: 40px;
+            height: 40px;
+            border: 3px solid #1a1a1a;
+            border-top: 3px solid #39ff14;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+            margin: 16px auto 0;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .poll-note {
+            font-size: 0.75rem;
+            color: #333;
+            margin-top: 24px;
+            font-family: 'Orbitron', sans-serif;
+            letter-spacing: 1px;
+        }
+
+        .error-retry { display: none; margin-top: 20px; }
+
+        .retry-btn {
+            background: transparent;
+            border: 2px solid #ff4444;
+            color: #ff4444;
+            padding: 10px 28px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.8rem;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .retry-btn:hover { background: #ff4444; color: #000; }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 12px;
+            }
+            .queue-card {
+                padding: 28px 18px;
+                border-radius: 12px;
+            }
+            .queue-icon {
+                font-size: 2.8rem;
+                margin-bottom: 12px;
+            }
+            .queue-title {
+                font-size: 1rem;
+                letter-spacing: 1px;
+            }
+            .queue-subtitle {
+                font-size: 0.82rem;
+                margin-bottom: 24px;
+            }
+            .status-box {
+                padding: 16px 14px;
+                margin-bottom: 18px;
+            }
+            .status-value {
+                font-size: 1.3rem;
+            }
+            .position-text {
+                font-size: 0.8rem;
+            }
+            .poll-note {
+                font-size: 0.68rem;
+            }
+            .retry-btn {
+                padding: 12px 22px;
+                font-size: 0.75rem;
+            }
+        }
+
+        html[data-theme="light"] body {
+            background: var(--content-bg);
+            color: var(--text);
+        }
+
+        html[data-theme="light"] .queue-card {
+            background: rgba(255, 255, 255, 0.82);
+            box-shadow: 0 22px 48px rgba(18, 32, 51, 0.14);
+        }
+
+        html[data-theme="light"] .queue-title {
+            color: var(--accent-lime);
+            text-shadow: none;
+        }
+
+        html[data-theme="light"] .queue-subtitle,
+        html[data-theme="light"] .position-text,
+        html[data-theme="light"] .poll-note {
+            color: var(--muted-text);
+        }
+
+        html[data-theme="light"] .status-box {
+            background: var(--surface-panel);
+            border-color: var(--surface-border);
+        }
+
+        html[data-theme="light"] .status-label {
+            color: var(--soft-text);
+        }
+
+        html[data-theme="light"] .dot {
+            background: #cfd8e5;
+        }
+
+        html[data-theme="light"] .spinner {
+            border-color: #d8e2ee;
+            border-top-color: var(--accent-lime);
+        }
+
+        html[data-theme="light"] .retry-btn:hover {
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+    <button type="button" class="theme-toggle theme-toggle-floating" data-theme-toggle>
+        <i class="theme-toggle-icon fa-solid fa-sun"></i>
+        <span class="theme-toggle-label">Light Mode</span>
+    </button>
+
+    <div class="queue-card">
+        <div class="queue-icon" id="queueIcon">📖</div>
+        <h1 class="queue-title" id="queueTitle">IN THE QUEUE</h1>
+        <p class="queue-subtitle">
+            Your Case Study document is being generated.<br>
+            Please keep this page open — do not refresh.
+        </p>
+
+        <div class="status-box">
+            <div class="status-label">Status</div>
+            <div class="status-value waiting" id="statusValue">WAITING</div>
+            <div class="spinner" id="spinner"></div>
+            <div class="position-text" id="positionText">
+                You are at position <span id="positionNum">—</span> in the queue
+            </div>
+        </div>
+
+        <div class="dots">
+            <div class="dot" id="d1"></div>
+            <div class="dot" id="d2"></div>
+            <div class="dot" id="d3"></div>
+            <div class="dot" id="d4"></div>
+        </div>
+
+        <div class="error-retry" id="errorRetry">
+            <p style="color:#ff4444;font-size:0.88rem;margin-bottom:12px;" id="errorMsg">Generation failed.</p>
+            <button class="retry-btn" onclick="window.location.href='/case-study'">Try Again</button>
+        </div>
+
+        <p class="poll-note" id="pollNote">Checking status every 3 seconds...</p>
+    </div>
+
+    <script>
+        const userId  = "<%= user.studentId %>";
+        const POLL_MS = 3000;
+        let pollTimer = null;
+
+        const statusEl   = document.getElementById("statusValue");
+        const posText    = document.getElementById("positionText");
+        const posNum     = document.getElementById("positionNum");
+        const spinner    = document.getElementById("spinner");
+        const icon       = document.getElementById("queueIcon");
+        const title      = document.getElementById("queueTitle");
+        const pollNote   = document.getElementById("pollNote");
+        const errorRetry = document.getElementById("errorRetry");
+        const errorMsg   = document.getElementById("errorMsg");
+        const dots       = ["d1","d2","d3","d4"].map(id => document.getElementById(id));
+
+        let dotIndex = 0;
+        const dotTimer = setInterval(() => {
+            dots.forEach((d, i) => d.classList.toggle("active", i === dotIndex));
+            dotIndex = (dotIndex + 1) % dots.length;
+        }, 500);
+
+        async function poll() {
+            try {
+                const res  = await fetch(`/case-study-status/${userId}?t=${Date.now()}`, {
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (res.redirected) {
+                    window.location.href = res.url;
+                    return;
+                }
+
+                const contentType = res.headers.get('content-type') || '';
+                if (!contentType.includes('application/json')) {
+                    throw new Error('Session expired. Please log in again.');
+                }
+
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.error || 'Status check failed.');
+                }
+
+                if (data.status === "waiting") {
+                    statusEl.className   = "status-value waiting";
+                    statusEl.textContent = "WAITING";
+                    posNum.textContent   = data.position || "—";
+                    posText.style.display  = "block";
+                    spinner.style.display  = "none";
+
+                } else if (data.status === "generating") {
+                    statusEl.className   = "status-value generating";
+                    statusEl.textContent = "GENERATING";
+                    icon.textContent     = "⚡";
+                    title.textContent    = "ANALYSING PROBLEM";
+                    posText.style.display  = "none";
+                    spinner.style.display  = "block";
+
+                } else if (data.status === "done") {
+                    clearInterval(dotTimer);
+                    clearInterval(pollTimer);
+
+                    statusEl.className   = "status-value done";
+                    statusEl.textContent = "DONE!";
+                    icon.textContent     = "✅";
+                    title.textContent    = "DOCUMENT READY";
+                    posText.style.display  = "none";
+                    spinner.style.display  = "none";
+                    pollNote.textContent   = "Starting download...";
+                    dots.forEach(d => { d.classList.add("active"); d.style.background = "#39ff14"; });
+
+                    // Auto-download
+                    const a = document.createElement("a");
+                    a.href     = `/download-case-study/${userId}`;
+                    a.download = data.fileName || "CaseStudy.docx";
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+
+                    pollNote.textContent = "Your document is downloading. You can generate another one below.";
+                    pollNote.style.color = "#39ff14";
+
+                    // New Case Study button
+                    const newBtn = document.createElement("a");
+                    newBtn.href      = "/case-study";
+                    newBtn.textContent = "+ NEW CASE STUDY DOCUMENT";
+                    newBtn.style.cssText = "display:inline-block;margin-top:20px;padding:12px 28px;border:2px solid #39ff14;color:#39ff14;font-family:Orbitron,sans-serif;font-size:0.85rem;border-radius:6px;text-decoration:none;transition:all 0.2s;";
+                    newBtn.onmouseover = () => { newBtn.style.background="#39ff14"; newBtn.style.color="#000"; };
+                    newBtn.onmouseout  = () => { newBtn.style.background="transparent"; newBtn.style.color="#39ff14"; };
+                    document.querySelector(".queue-card").appendChild(newBtn);
+
+                } else if (data.status === "error") {
+                    clearInterval(dotTimer);
+                    clearInterval(pollTimer);
+
+                    statusEl.className   = "status-value error";
+                    statusEl.textContent = "ERROR";
+                    icon.textContent     = "❌";
+                    posText.style.display  = "none";
+                    spinner.style.display  = "none";
+                    pollNote.style.display = "none";
+                    errorMsg.textContent   = data.message || "Generation failed. Please try again.";
+                    errorRetry.style.display = "block";
+                }
+
+            } catch (e) {
+                clearInterval(dotTimer);
+                clearInterval(pollTimer);
+                console.error("Poll error:", e);
+                statusEl.className   = "status-value error";
+                statusEl.textContent = "ERROR";
+                icon.textContent     = "❌";
+                posText.style.display  = "none";
+                spinner.style.display  = "none";
+                pollNote.style.display = "none";
+                errorMsg.textContent   = e.message || "Status check failed.";
+                errorRetry.style.display = "block";
+            }
+        }
+
+        poll();
+        pollTimer = setInterval(poll, POLL_MS);
+    </script>
+    <script defer src="/js/theme.js"></script>
+    <script src="https://pl29036010.profitablecpmratenetwork.com/66/6b/33/666b337c5a9fa74ac766be2bec6852a4.js"></script>
+
+</body>
+</html>

@@ -2516,6 +2516,715 @@ app.get("/cep-queue", isAuthenticated, (req, res) => {
     res.render("cep-queue", { user: req.user });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// CASE STUDY — Queue-based generation with Docxtemplater
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MAX_CASE_STUDY_JOBS = 4;
+const EFFECTIVE_CASE_STUDY_TTL = 60 * 60;
+
+async function refreshCaseStudyQueuePositions() {
+    const queue = await redis.lrange("case_study_queue", 0, -1);
+
+    for (let i = 0; i < queue.length; i++) {
+        await setRedisJson(
+            `case_study_result:${queue[i]}`,
+            { status: "waiting", position: i + 1 },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+    }
+}
+
+async function recoverStuckCaseStudy() {
+    const throttle = await redis.set("case_study_recovery_lock", "1", { nx: true, ex: 60 });
+    if (!throttle) return;
+
+    try {
+        let freedAny = false;
+        const processing = await redis.lrange("case_study_processing", 0, -1);
+        const STUCK_MS = 8 * 60 * 1000;
+        let active = parseInt(await redis.get("case_study_active") || "0", 10);
+        if (isNaN(active) || active < 0) active = 0;
+
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[CaseStudyRecovery] Resetting stale active count ${active} with empty processing list`);
+            await redis.set("case_study_active", "0");
+            active = 0;
+            freedAny = true;
+        } else if (active > processing.length) {
+            console.warn(`[CaseStudyRecovery] Clamping stale active count ${active} -> ${processing.length}`);
+            await redis.set("case_study_active", String(processing.length));
+            active = processing.length;
+            freedAny = true;
+        }
+
+        for (const userId of processing) {
+            const result = await getRedisJson(`case_study_result:${userId}`);
+
+            if (!result) {
+                console.warn(`[CaseStudyRecovery] Missing result for ${userId}, re-queuing`);
+                await redis.lrem("case_study_processing", 0, userId);
+                const n = await redis.decr("case_study_active");
+                if (n < 0) await redis.set("case_study_active", "0");
+                const pos = await redis.lpos("case_study_queue", userId);
+                if (pos === null) await redis.rpush("case_study_queue", userId);
+                await setRedisJson(
+                    `case_study_result:${userId}`,
+                    { status: "waiting", position: 99 },
+                    EFFECTIVE_CASE_STUDY_TTL
+                );
+                freedAny = true;
+                continue;
+            }
+
+            if (result.status === "generating") {
+                const age = Date.now() - (result.startedAt || 0);
+                if (!result.startedAt || age > STUCK_MS) {
+                    console.warn(`[CaseStudyRecovery] Stuck case study for ${userId}, re-queuing`);
+                    await redis.lrem("case_study_processing", 0, userId);
+                    const n = await redis.decr("case_study_active");
+                    if (n < 0) await redis.set("case_study_active", "0");
+                    const pos = await redis.lpos("case_study_queue", userId);
+                    if (pos === null) await redis.rpush("case_study_queue", userId);
+                    await setRedisJson(
+                        `case_study_result:${userId}`,
+                        { status: "waiting", position: 99 },
+                        EFFECTIVE_CASE_STUDY_TTL
+                    );
+                    freedAny = true;
+                }
+            }
+        }
+
+        await refreshCaseStudyQueuePositions();
+        const queueLength = await redis.llen("case_study_queue");
+        const refreshedActive = parseInt(await redis.get("case_study_active") || "0", 10);
+        if (queueLength > 0 && (isNaN(refreshedActive) || refreshedActive < MAX_CASE_STUDY_JOBS)) {
+            freedAny = true;
+        }
+
+        if (freedAny) {
+            console.log("[CaseStudyRecovery] Freed stuck case study slots, restarting queue...");
+            processNextCaseStudy().catch(err => console.error("[CaseStudyRecovery] restart error:", err));
+        }
+    } catch (err) {
+        console.error("[CaseStudyRecovery] error:", err);
+    }
+}
+
+// ─── Enqueue Case Study ───────────────────────────────────────────────────────
+app.post("/generate-case-study", isAuthenticated, async (req, res) => {
+    const userId = req.user.studentId;
+    try {
+        // Don't double-queue
+        const existing = await getRedisJson(`case_study_result:${userId}`);
+        if (existing) {
+            if (existing.status === "waiting" || existing.status === "generating") {
+                return res.json({ queued: true, position: existing.position || 1 });
+            }
+        }
+
+        const existingQueuePos = await redis.lpos("case_study_queue", userId);
+        if (existingQueuePos !== null) {
+            await setRedisJson(
+                `case_study_result:${userId}`,
+                { status: "waiting", position: existingQueuePos + 1 },
+                EFFECTIVE_CASE_STUDY_TTL
+            );
+            return res.json({ queued: true, position: existingQueuePos + 1 });
+        }
+
+        const existingProcessingPos = await redis.lpos("case_study_processing", userId);
+        if (existingProcessingPos !== null) {
+            await setRedisJson(
+                `case_study_result:${userId}`,
+                { status: "generating", startedAt: Date.now() },
+                EFFECTIVE_CASE_STUDY_TTL
+            );
+            return res.json({ queued: true, processing: true });
+        }
+
+        // Save form data to Redis
+        await setRedisJson(`case_study_form:${userId}`, { ...req.body, authenticatedUser: req.user }, EFFECTIVE_CASE_STUDY_TTL);
+
+        await redis.lrem("case_study_queue", 0, userId);
+        await redis.rpush("case_study_queue", userId);
+
+        const queue    = await redis.lrange("case_study_queue", 0, -1);
+        const position = queue.indexOf(userId) + 1;
+
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            { status: "waiting", position },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+
+        console.log(`[CaseStudy] Enqueued ${userId} at position ${position}`);
+        processNextCaseStudy().catch(err => console.error("[CaseStudy] boot error:", err));
+        return res.json({ queued: true, position });
+
+    } catch (err) {
+        console.error("[CaseStudy] Enqueue error:", err);
+        return res.status(500).json({ error: "Failed to queue: " + err.message });
+    }
+});
+
+// ─── Case Study Queue Worker ──────────────────────────────────────────────────
+async function processNextCaseStudy() {
+    const lock = await redis.set("case_study_lock", "1", { nx: true, ex: 15 });
+    if (!lock) return;
+
+    try {
+        let active = parseInt(await redis.get("case_study_active") || "0", 10);
+        if (isNaN(active) || active < 0) { active = 0; await redis.set("case_study_active", "0"); }
+        const processing = await redis.lrange("case_study_processing", 0, -1);
+        if (processing.length === 0 && active > 0) {
+            console.warn(`[CaseStudy] Resetting stale active count ${active} before dispatch`);
+            active = 0;
+            await redis.set("case_study_active", "0");
+        } else if (active > processing.length) {
+            console.warn(`[CaseStudy] Clamping stale active count ${active} -> ${processing.length}`);
+            active = processing.length;
+            await redis.set("case_study_active", String(processing.length));
+        }
+
+        console.log(`[CaseStudy] active=${active}/${MAX_CASE_STUDY_JOBS}`);
+        if (active >= MAX_CASE_STUDY_JOBS) return;
+
+        const userId = await redis.lpop("case_study_queue");
+        if (!userId) { console.log("[CaseStudy] Queue empty."); return; }
+
+        await redis.lpush("case_study_processing", userId);
+        await redis.incr("case_study_active");
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            { status: "generating", startedAt: Date.now() },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+
+        await refreshCaseStudyQueuePositions();
+
+        console.log(`[CaseStudy] Worker start for ${userId} | active=${active + 1}`);
+        runCaseStudyJob(userId).catch(err => console.error(`[CaseStudy] job error ${userId}:`, err));
+
+    } catch (err) {
+        console.error("[CaseStudy] processNextCaseStudy error:", err);
+    } finally {
+        await redis.del("case_study_lock");
+    }
+}
+
+// ─── Helper: Calculate dynamic page numbers based on AI-generated content ──────
+// pageNoX = the END page (last page) of each section in the TOC.
+// Main section headings (1, 2, 3...) accumulate all their subsections.
+// Subsection page numbers are the end page of just that subsection.
+function generateDynamicPageNumbers(aiData) {
+    const WORDS_PER_PAGE = 250; // ~250 words per page in 12pt Word doc with margins
+
+    function wc(text) {
+        if (!text) return 0;
+        return String(text).replace(/\n/g, " ").trim().split(/\s+/).length;
+    }
+
+    function pages(text) {
+        return Math.max(1, Math.ceil(wc(text) / WORDS_PER_PAGE));
+    }
+
+    // Reserve page 1 for cover + TOC
+    let p = 1;
+
+    // ── Section 1: Introduction ─────────────────────────────────────────────
+    const p_intro        = p + pages(aiData.introduction);       p = p_intro;
+    const p_useInCampus  = p + pages(aiData.useInCampus);        p = p_useInCampus;
+    const p_focus        = p + pages(aiData.focus);              p = p_focus;
+    const p_psBrief      = p + pages(aiData.problemStatementBrief); p = p_psBrief;
+    const p_why          = p + pages(aiData.whyThisTechnique);   p = p_why;
+    const p_obs          = p + pages(aiData.observation);        p = p_obs;
+    const p_scope        = p + pages(aiData.scope);              p = p_scope;
+    const p_sec1_end     = p_scope; // Section 1 ends at scope
+
+    // ── Section 2: Theory ──────────────────────────────────────────────────
+    const p_theory       = p + pages(aiData.theory);             p = p_theory;
+    const p_bg           = p + pages(aiData.background);         p = p_bg;
+    const p_hist         = p + pages(aiData.historicalContext);  p = p_hist;
+    const p_framework    = p + pages(aiData.theoreticalFramework); p = p_framework;
+    const p_sec2_end     = p_framework;
+
+    // ── Section 3: Principles ─────────────────────────────────────────────
+    const p_principles   = p + pages(aiData.principles);         p = p_principles;
+    const p_props        = p + pages(aiData.propertiesOfTopic);  p = p_props;
+    const p_howsolves    = p + pages(aiData.howItSolves);        p = p_howsolves;
+    const p_sec3_end     = p_howsolves;
+
+    // ── Section 4: Problem Statement ─────────────────────────────────────
+    const p_psSummary    = p + pages(aiData.problemStatementSummary); p = p_psSummary;
+    const p_related1     = p + pages(aiData.relatedAns1);        p = p_related1;
+    const p_related2     = p + pages(aiData.relatedAns2);        p = p_related2;
+    const p_sec4_end     = p_related2;
+
+    // ── Section 5: Different Approaches ─────────────────────────────────
+    const p_diffApproach = p + pages(aiData.differentApproachesAns); p = p_diffApproach;
+    const p_app1         = p + pages(aiData.approachRelatedAns1); p = p_app1;
+    const p_app2         = p + pages(aiData.approachRelatedAns2); p = p_app2;
+    const p_sec5_end     = p_app2;
+
+    // ── Section 6: Applications ──────────────────────────────────────────
+    const p_appMain      = p + pages(aiData.applicationRelatedAnsMain); p = p_appMain;
+    const p_appT1        = p + pages(aiData.applicationRelatedAns1); p = p_appT1;
+    const p_appT2        = p + pages(aiData.applicationRelatedAns2); p = p_appT2;
+    const p_appT3        = p + pages(aiData.applicationRelatedAns3); p = p_appT3;
+    const p_sec6_end     = p_appT3;
+
+    // ── Section 7: Design and Analysis ──────────────────────────────────
+    const p_design       = p + pages(aiData.designAndAnalysisRelatedAns); p = p_design;
+    const p_sec7_end     = p_design;
+
+    // ── Conclusion + References ──────────────────────────────────────────
+    const p_conclusion   = p + pages(aiData.conclusion);         p = p_conclusion;
+    const p_references   = p + pages(aiData.references);
+
+    return {
+        // Main section headings → end page of entire section (TOC right column)
+        pageNo1:  String(p_sec1_end),    // Section 1 end
+        pageNo8:  String(p_sec2_end),    // Section 2 end
+        pageNo10: String(p_sec3_end),    // Section 3 end
+        pageNo12: String(p_sec4_end),    // Section 4 end
+        pageNo14: String(p_sec5_end),    // Section 5 end
+        pageNo16: String(p_sec6_end),    // Section 6 end
+        pageNo19: String(p_sec7_end),    // Section 7 end
+        pageNo20: String(p_conclusion),  // Conclusion
+        pageNo21: String(p_references),  // References
+
+        // Subsection page numbers → end page of that subsection
+        pageNo2:  String(p_useInCampus),
+        pageNo3:  String(p_focus),
+        pageNo4:  String(p_psBrief),
+        pageNo5:  String(p_why),
+        pageNo6:  String(p_obs),
+        pageNo7:  String(p_scope),
+        pageNo9:  String(p_framework),   // end of 2.1 + 2.2
+        pageNo11: String(p_howsolves),   // end of 3.1 + 3.2
+        pageNo13: String(p_related2),    // end of 4.1 + 4.2
+        pageNo15: String(p_app2),        // end of 5.1 + 5.2
+        pageNo17: String(p_appT2),       // end of 6.1 + 6.2
+        pageNo18: String(p_appT3),       // 6.3 subsection
+    };
+}
+
+// ─── Run one Case Study generation job ────────────────────────────────────────
+async function runCaseStudyJob(userId) {
+    try {
+        const form = await getRedisJson(`case_study_form:${userId}`);
+        if (!form) throw new Error("Form data missing for user: " + userId);
+        console.log(`[CaseStudy] Reading form data for ${userId}`);
+
+        const ps = form.problemStatement || "";
+        const topicInput = form.topicName || form.topic || "";
+
+        const rawDate = form.date || new Date().toISOString().split("T")[0];
+        const dateObj = new Date(rawDate);
+        const formattedDate = dateObj.toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "long",
+            year: "numeric"
+        });
+
+        const prompt = `
+You are an expert academic case-study writer for engineering students at a university level.
+
+Generate DETAILED, LENGTHY, and ACADEMICALLY RICH content for a university case study report.
+
+Topic: "${topicInput}"
+Problem Statement: "${ps}"
+Institute context: "IARE (Institute of Aeronautical Engineering), Hyderabad"
+
+Return ONLY a valid JSON object with these exact keys and plain string values.
+No markdown, no asterisks, no bullet symbols. Use \\n to separate sentences/points within a value.
+
+CONTENT LENGTH REQUIREMENTS — STRICTLY FOLLOW:
+- Short headings: 3-9 words
+- problemStatement: exactly 1 sentence, 12-20 words
+- Brief paragraphs (problemStatementBrief, problemStatementSummary): 4-5 sentences
+- Standard paragraphs (introduction, useInCampus, focus, whyThisTechnique, observation, scope, theory, background, historicalContext, theoreticalFramework, principles, propertiesOfTopic, howItSolves, conclusion): 8-10 sentences each. Separate each sentence with \\n.
+- Answer paragraphs (relatedAns1, relatedAns2, differentApproachesAns, approachRelatedAns1, approachRelatedAns2, applicationRelatedAnsMain, applicationRelatedAns1, applicationRelatedAns2, applicationRelatedAns3, designAndAnalysisRelatedAns): 7-9 sentences each. Separate each sentence with \\n.
+- references: Exactly 5 numbered lines. Each reference must be a real-format academic citation. Format: 1. Author(s), "Title," Journal/Conference, Year.\\n2. ...\\n3. ...\\n4. ...\\n5. ...
+
+{
+  "problemStatement": "ONE sentence 12-20 words summarising the core problem for use as both heading and body summary.",
+  "principleTopic1": "Short side heading (3-7 words) for principles subsection 1",
+  "principleTopic2": "Short side heading (3-7 words) for principles subsection 2",
+  "problemTopic1": "Short side heading (3-7 words) for problem subsection 4.1",
+  "problemTopic2": "Short side heading (3-7 words) for problem subsection 4.2",
+  "differentApproaches": "Short heading (4-9 words) for section 5 — different approaches to solving the problem",
+  "approachTopic1": "Short side heading (3-7 words) for approach subsection 5.1",
+  "approachTopic2": "Short side heading (3-7 words) for approach subsection 5.2",
+  "application": "Short heading (3-8 words) for applications section 6",
+  "applicationTopic1": "Short side heading (3-7 words) for application subsection 6.1",
+  "applicationTopic2": "Short side heading (3-7 words) for application subsection 6.2",
+  "designAndAnalysis": "Short heading (4-9 words) for design and analysis section 7",
+  "introduction": "8-10 sentences introducing the topic, engineering context, importance, and relevance. Each sentence on its own line separated by \\n.",
+  "useInCampus": "8-10 sentences on specific, practical usage of this topic/solution at IARE campus (labs, departments, research, courses). Each sentence on new line via \\n.",
+  "focus": "8-10 sentences on the focus of the case study — what aspect of the topic is being studied and why. Each sentence separated by \\n.",
+  "problemStatementBrief": "4-5 sentences briefly summarising the problem statement for the introduction section. Sentences separated by \\n.",
+  "whyThisTechnique": "8-10 sentences explaining the reasoning behind choosing this specific technique or solution approach over alternatives. Separate with \\n.",
+  "observation": "8-10 sentences presenting observations made from analysing the problem, data patterns, and contextual factors. Separate with \\n.",
+  "scope": "8-10 sentences defining what the solution covers and what it does not — boundaries, scale, assumptions. Separate with \\n.",
+  "theory": "8-10 sentences explaining the core theoretical concepts underpinning the topic and its relevance to solving the problem. Separate with \\n.",
+  "background": "8-10 sentences on the background, prerequisites, and foundational knowledge needed. Separate with \\n.",
+  "historicalContext": "8-10 sentences covering the historical evolution and development of the topic. Separate with \\n.",
+  "theoreticalFramework": "8-10 sentences describing the theoretical models, frameworks, or algorithms being applied. Separate with \\n.",
+  "principles": "8-10 sentences explaining the key technical and scientific principles of the topic. Separate with \\n.",
+  "propertiesOfTopic": "8-10 sentences on the properties, characteristics, and attributes of the topic relevant to the problem. Separate with \\n.",
+  "howItSolves": "8-10 sentences explaining step-by-step how the technique/solution addresses the problem statement. Separate with \\n.",
+  "problemStatementSummary": "4-5 sentences summarising the problem at the start of section 4. Separate with \\n.",
+  "relatedAns1": "7-9 detailed sentences answering the first problem subsection heading. Separate with \\n.",
+  "relatedAns2": "7-9 detailed sentences answering the second problem subsection heading. Separate with \\n.",
+  "differentApproachesAns": "7-9 sentences summarising the different approaches considered for solving this problem. Separate with \\n.",
+  "approachRelatedAns1": "7-9 sentences explaining approach subsection 1 in detail. Separate with \\n.",
+  "approachRelatedAns2": "7-9 sentences explaining approach subsection 2 in detail. Separate with \\n.",
+  "applicationRelatedAnsMain": "7-9 sentences describing the overall application of the solution in real-world and academic contexts. Separate with \\n.",
+  "applicationRelatedAns1": "7-9 sentences for application subsection 6.1. Separate with \\n.",
+  "applicationRelatedAns2": "7-9 sentences for application subsection 6.2. Separate with \\n.",
+  "applicationRelatedAns3": "7-9 sentences for an additional real-world application example. Separate with \\n.",
+  "designAndAnalysisRelatedAns": "7-9 sentences on the design approach, implementation decisions, and analysis outcomes for section 7. Separate with \\n.",
+  "conclusion": "8-10 sentences concluding the case study — summarise findings, significance, and implications. Separate with \\n.",
+  "references": "Exactly 5 academic reference citations. Format: 1. Author(s), Title, Journal/Conference, Year.\\n2. ...\\n3. ...\\n4. ...\\n5. ..."
+}
+
+ABSOLUTE RULES:
+- Every paragraph field MUST have at least 7 sentences. Do not write less.
+- Use \\n to put each sentence on its own line inside the JSON string.
+- Do NOT use actual newlines inside JSON strings.
+- Do NOT use markdown (no **, no ##, no - bullets, no • symbols).
+- Keep all heading fields short and title-friendly (no full stops).
+- Content must be specific to the topic and problem statement — no generic filler.
+- Write in formal academic English.
+`;
+
+        const aiResult = await generateWithFallback(m => m.generateContent(prompt), true);
+        const aiData = parseAiJson(aiResult.response.text());
+
+        function compactLine(text) {
+            return String(text || "").replace(/\s+/g, " ").trim();
+        }
+
+        // Enforce short TOC headings: max 6 words, no trailing punctuation
+        function tocHeading(text, maxWords = 6) {
+            const clean = compactLine(text || "")
+                .replace(/[.!?;:]$/, "")   // strip trailing punctuation
+                .replace(/^(A |An |The )/i, ""); // strip leading articles
+            const words = clean.split(" ");
+            if (words.length <= maxWords) return clean;
+            // Try to find a natural break at a preposition/conjunction
+            const stopAt = ["of", "in", "for", "and", "the", "with", "to", "by", "at"];
+            for (let i = Math.min(words.length - 1, maxWords); i >= 3; i--) {
+                if (stopAt.includes(words[i].toLowerCase())) {
+                    return words.slice(0, i).join(" ");
+                }
+            }
+            return words.slice(0, maxWords).join(" ");
+        }
+
+        // ── ensureParagraphs ─────────────────────────────────────────────────────
+        // Converts AI output into clean paragraph text for Docxtemplater.
+        // 
+        // ROOT CAUSE of word-spacing bug:
+        //   Docxtemplater linebreaks:true converts \n → <w:br/> (soft line break
+        //   inside one <w:p>). When that paragraph is justified, Word stretches the
+        //   few words on each short line edge-to-edge → huge gaps.
+        //
+        // FIX: collapse all \n into a single space so each section becomes ONE
+        //   continuous justified paragraph. Word justifies a full paragraph cleanly.
+        //   Only \n\n (explicit section break) becomes a real paragraph break.
+        function ensureParagraphs(text) {
+            let value = String(text || "").replace(/\r/g, "").trim();
+            if (!value) return "";
+
+            // Normalise line endings
+            value = value.replace(/\r\n/g, "\n");
+
+            // Collapse 3+ newlines to double (intentional paragraph break)
+            value = value.replace(/\n{3,}/g, "\n\n");
+
+            // Collapse single \n (sentence breaks) into a space — this is the key fix.
+            // Single \n becomes <w:br/> which breaks justified layout.
+            // One continuous paragraph justifies cleanly.
+            value = value.replace(/(?<!\n)\n(?!\n)/g, " ");
+
+            // Clean up any double spaces introduced
+            value = value.replace(/ {2,}/g, " ");
+
+            return value.trim();
+        }
+
+        function mergeTwoHeadings(a, b, fallbackA, fallbackB) {
+            const first = compactLine(a || fallbackA || "");
+            const second = compactLine(b || fallbackB || "");
+            if (first && second && first.toLowerCase() !== second.toLowerCase()) {
+                return `${first} / ${second}`;
+            }
+            return first || second;
+        }
+
+        function mergeTwoAnswers(titleA, ansA, titleB, ansB) {
+            const t1 = compactLine(titleA || "Aspect 1");
+            const t2 = compactLine(titleB || "Aspect 2");
+            const a1 = ensureParagraphs(ansA || "");
+            const a2 = ensureParagraphs(ansB || "");
+            const chunks = [];
+            if (a1) chunks.push(`${t1}: ${a1}`);
+            if (a2) chunks.push(`${t2}: ${a2}`);
+            return chunks.join("\n\n").trim();
+        }
+
+        function normalizeReferences(text) {
+            // Split on newlines or on "2." "3." etc that run together without newline
+            let raw = String(text || "").replace(/\r/g, "").trim();
+            // Insert newline before each numbered item if not already separated
+            raw = raw.replace(/(?<=[.!?\w])\s+(?=\d+\.\s)/g, "\n");
+            const rawLines = raw
+                .split("\n")
+                .map(line => line.trim())
+                .filter(Boolean)
+                .map(line => line.replace(/^\d+\.\s*/, "").trim())
+                .filter(Boolean);
+            while (rawLines.length < 5) rawLines.push("Reference details to be updated.");
+            // Join with \n\n so Docxtemplater (linebreaks:true) creates a new
+            // paragraph for each reference — no stretched justification, clean layout
+            return rawLines.slice(0, 5).map((line, idx) => `${idx + 1}. ${line}`).join("\n\n");
+        }
+
+        function extractSectionFromClass(classValue) {
+            const cls = compactLine(classValue || "");
+            const match = cls.match(/[-\s]([A-Za-z])$/);
+            return match ? match[1].toUpperCase() : cls;
+        }
+
+        // ── Individual answer paragraphs are mapped directly in docData below ──
+
+        const docData = {
+            aatNo: compactLine(form.aatNo || form.type || ""),
+            name: compactLine(form.name || ""),
+            rollNo: compactLine(form.rollNo || ""),
+            branch: compactLine(form.class || ""),
+            section: compactLine(form.section || extractSectionFromClass(form.class || "")),
+            semester: compactLine(form.semester || ""),
+            courseCode: compactLine(form.courseCode || ""),
+            faculty: compactLine(form.faculty || form.lecturerName || ""),
+
+            topic: compactLine(topicInput || ps),
+            problemStatement: compactLine(aiData.problemStatement || ps),
+
+            // ── Section headings — enforced short via tocHeading() (max 6 words) ──
+            principleRelatedTopic1:       tocHeading(aiData.principleTopic1    || "Core Principles"),
+            principleRelatedTopic2:       tocHeading(aiData.principleTopic2    || "Solution Principles"),
+            problemStatementRelatedTopic1:tocHeading(aiData.problemTopic1      || "Root Cause Analysis"),
+            problemStatementRelatedTopic2:tocHeading(aiData.problemTopic2      || "Impact Dimensions"),
+            relatedTopic1:                tocHeading(aiData.problemTopic1      || "Root Cause Analysis"),
+            relatedTopic2:                tocHeading(aiData.problemTopic2      || "Impact Dimensions"),
+            differentApproaches:          tocHeading(aiData.differentApproaches|| "Comparative Approaches", 5),
+            approachRelatedTopic1:        tocHeading(aiData.approachTopic1     || "Primary Approach"),
+            approachRelatedTopic2:        tocHeading(aiData.approachTopic2     || "Alternative Approach"),
+            appraochRelated1:             tocHeading(aiData.approachTopic1     || "Primary Approach"),   // template typo
+            approachRelated2:             tocHeading(aiData.approachTopic2     || "Alternative Approach"),
+            application:                  tocHeading(aiData.application        || "Real World Applications", 5),
+            applicationRelatedTopic1:     tocHeading(aiData.applicationTopic1  || "Operational Application"),
+            applicationRelatedTopic2:     tocHeading(aiData.applicationTopic2  || "Strategic Application"),
+            designAndAnalysis:            tocHeading(aiData.designAndAnalysis  || "Design and Analysis", 5),
+
+            // ── Dynamic page numbers based on content length ──
+            ...generateDynamicPageNumbers(aiData),
+
+            // ── Section content ──
+            introduction: ensureParagraphs(aiData.introduction || ""),
+            useInCampus: ensureParagraphs(aiData.useInCampus || ""),
+            focus: ensureParagraphs(aiData.focus || ""),
+            problemStatementBrief: ensureParagraphs(aiData.problemStatementBrief || aiData.problemStatement || ps),
+            whyThisTechnique: ensureParagraphs(aiData.whyThisTechnique || ""),
+            observation: ensureParagraphs(aiData.observation || ""),
+            scope: ensureParagraphs(aiData.scope || ""),
+            theory: ensureParagraphs(aiData.theory || ""),
+            background: ensureParagraphs(aiData.background || ""),
+            historicalContext: ensureParagraphs(aiData.historicalContext || ""),
+            theoreticalFramework: ensureParagraphs(aiData.theoreticalFramework || ""),
+            principles: ensureParagraphs(aiData.principles || ""),
+            propertiesOfTopic: ensureParagraphs(aiData.propertiesOfTopic || ""),
+            howItSolves: ensureParagraphs(aiData.howItSolves || ""),
+            problemStatementSummary: ensureParagraphs(aiData.problemStatementSummary || aiData.problemStatement || ps),
+            relatedAns1: ensureParagraphs(aiData.relatedAns1 || ""),
+            relatedAns2: ensureParagraphs(aiData.relatedAns2 || ""),
+            differentApproachesAns1: ensureParagraphs(aiData.differentApproachesAns || ""),
+            approachRelatedAns1: ensureParagraphs(aiData.approachRelatedAns1 || ""),
+            approachRelatedAns2: ensureParagraphs(aiData.approachRelatedAns2 || ""),
+            applicationRelatedAns1: ensureParagraphs(aiData.applicationRelatedAns1 || ""),
+            applicationRelatedAns2: ensureParagraphs(aiData.applicationRelatedAns2 || ""),
+            applicationRelatedAns3: ensureParagraphs(aiData.applicationRelatedAns3 || ""),
+            designAndAnalysisRelatedAns: ensureParagraphs(aiData.designAndAnalysisRelatedAns || ""),
+            conclusion: ensureParagraphs(aiData.conclusion || ""),
+            references: normalizeReferences(aiData.references || ""),
+
+            // Try every field name the form might send for course title
+            // Template uses {state} for course title field — map it here
+            courseTitle: compactLine(form.courseTitle || form.courseName || form.couseTitle || form.course || ""),
+            couseTitle:  compactLine(form.courseTitle || form.courseName || form.couseTitle || form.course || ""),
+            state:       compactLine(form.courseTitle || form.courseName || form.couseTitle || form.course || ""),
+            date: formattedDate
+        };
+
+        const templateBuf = fs.readFileSync(
+            path.join(__dirname, "assets", "CaseStudy_Template.docx"),
+            "binary"
+        );
+        const zip = new PizZip(templateBuf);
+        const doc = new Docxtemplater(zip, {
+            paragraphLoop: true,
+            linebreaks: true
+        });
+        doc.render(docData);
+        const buf = doc.getZip().generate({ type: "nodebuffer", compression: "DEFLATE" });
+
+        const safeName = (form.name || "Student").replace(/[^a-zA-Z0-9_]/g, "_");
+
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            {
+                status: "done",
+                fileName: `${safeName}_CaseStudy.docx`,
+                docBase64: buf.toString("base64")
+            },
+            EFFECTIVE_CASE_STUDY_TTL
+        );
+
+        console.log(`[CaseStudy] Done for ${userId}`);
+    } catch (err) {
+        console.error(`[CaseStudy] Failed for ${userId}:`, err.message);
+        await setRedisJson(
+            `case_study_result:${userId}`,
+            { status: "error", message: err.message },
+            10 * 60
+        );
+    } finally {
+        const n = await redis.decr("case_study_active");
+        if (n < 0) await redis.set("case_study_active", "0");
+        await redis.lrem("case_study_processing", 0, userId);
+        console.log(`[CaseStudy] Cleanup success for ${userId}`);
+        processNextCaseStudy().catch(err => console.error("[CaseStudy] next-job error:", err));
+    }
+}
+
+app.get("/case-study-status/:userId", isAuthenticated, async (req, res) => {
+    const { userId } = req.params;
+
+    if (!isOwnUser(req, userId)) {
+        console.warn(`[Auth] Case Study status forbidden for ${req.user.studentId} -> ${userId}`);
+        return res.status(403).json({ error: "Forbidden" });
+    }
+
+    try {
+        recoverStuckCaseStudy().catch(console.error);
+        processNextCaseStudy().catch(console.error);
+        const data = await getRedisJson(`case_study_result:${userId}`);
+        if (!data) {
+            const queuePos = await redis.lpos("case_study_queue", userId);
+            const processingPos = await redis.lpos("case_study_processing", userId);
+
+            if (queuePos !== null) {
+                await setRedisJson(
+                    `case_study_result:${userId}`,
+                    { status: "waiting", position: queuePos + 1 },
+                    EFFECTIVE_CASE_STUDY_TTL
+                );
+                return res.json({ status: "waiting", position: queuePos + 1 });
+            }
+
+            if (processingPos !== null) {
+                await setRedisJson(
+                    `case_study_result:${userId}`,
+                    { status: "generating", startedAt: Date.now() },
+                    EFFECTIVE_CASE_STUDY_TTL
+                );
+                return res.json({ status: "generating" });
+            }
+
+            return res.json({ status: "not_found" });
+        }
+
+        if (data.status === "waiting") {
+            const queuePos = await redis.lpos("case_study_queue", userId);
+            const processingPos = await redis.lpos("case_study_processing", userId);
+
+            if (queuePos === null && processingPos === null) {
+                console.warn(`[CaseStudyStatus] Re-queueing lost waiting job for ${userId}`);
+                await redis.rpush("case_study_queue", userId);
+                await refreshCaseStudyQueuePositions();
+                processNextCaseStudy().catch(console.error);
+                const repaired = await getRedisJson(`case_study_result:${userId}`);
+                return res.json(repaired || { status: "waiting", position: 1 });
+            }
+
+            return res.json({
+                ...data,
+                position: queuePos === null ? data.position || 1 : queuePos + 1
+            });
+        }
+
+        if (data.status === "generating") {
+            const processingPos = await redis.lpos("case_study_processing", userId);
+            if (processingPos === null) {
+                console.warn(`[CaseStudyStatus] Generating job missing from processing for ${userId}, forcing recovery`);
+                recoverStuckCaseStudy().catch(console.error);
+                processNextCaseStudy().catch(console.error);
+            }
+        }
+
+        if (data.status === "done") return res.json({ status: "done", fileName: data.fileName });
+        return res.json(data);
+    } catch (err) {
+        console.error("[CaseStudy] Status error:", err);
+        return res.status(500).json({ error: "Status check failed." });
+    }
+});
+
+// ─── Case Study Download ──────────────────────────────────────────────────────
+app.get("/download-case-study/:userId", isAuthenticated, async (req, res) => {
+    const { userId } = req.params;
+
+    if (!isOwnUser(req, userId)) {
+        console.warn(`[Auth] Case Study download forbidden for ${req.user.studentId} -> ${userId}`);
+        return res.status(403).send("Forbidden");
+    }
+
+    try {
+        const data = await getRedisJson(`case_study_result:${userId}`);
+        if (!data) return res.status(404).send("Document not found. Please generate again.");
+        if (data.status !== "done") return res.status(400).send("Document not ready yet.");
+
+        const buf      = Buffer.from(data.docBase64, "base64");
+        const fileName = data.fileName || `${userId}_CaseStudy.docx`;
+
+        res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        res.send(buf);
+
+        await redis.del(`case_study_result:${userId}`);
+        await redis.del(`case_study_form:${userId}`);
+        console.log(`[CaseStudy] Download success for ${userId}`);
+    } catch (err) {
+        console.error("[CaseStudy] Download error:", err);
+        res.status(500).send("Download failed: " + err.message);
+    }
+});
+
+// ─── Case Study Form Page ─────────────────────────────────────────────────────
+app.get("/case-study", isAuthenticated, (req, res) => {
+    res.render("case-study", { user: req.user });
+});
+
+// ─── Case Study Queue Waiting Page ────────────────────────────────────────────
+app.get("/case-study-queue", isAuthenticated, (req, res) => {
+    res.render("case-study-queue", { user: req.user });
+});
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 8080;
 
