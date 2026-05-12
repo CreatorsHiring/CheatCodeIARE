@@ -47,7 +47,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Best/newest first, most stable last.
 const MODEL_FALLBACK_CHAIN = [
     "gemini-2.5-flash-lite",         // 2. Best Value (₹8 per 1M tokens) - Highly recommended
-    "gemini-3.1-flash-lite-preview",  // 3. Newest & Fastest (₹20 per 1M tokens) - Backup
+    "gemini-3.1-flash-lite",  // 3. Newest & Fastest (₹20 per 1M tokens) - Backup
     "gemini-2.5-flash"
 ];
 
