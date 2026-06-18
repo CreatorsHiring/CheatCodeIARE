@@ -621,6 +621,37 @@ footer {
     padding-top: 20px;
     border-top: 1px solid rgba(255, 0, 255, 0.2);
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.ad-wrapper .donate-img {
+    width: min(100%, 320px);
+    max-width: 320px;
+    height: auto;
+    border-radius: 18px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.14);
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+    object-fit: contain;
+}
+
+.ad-wrapper .donate-img:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+}
+
+@media (max-width: 768px) {
+    .ad-wrapper {
+        margin-top: 22px;
+        padding-top: 18px;
+    }
+
+    .ad-wrapper .donate-img {
+        max-width: 240px;
+    }
 }
 
 .ad-label {
