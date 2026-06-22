@@ -544,19 +544,22 @@ footer {
     }
 
     .cards-container {
-        gap: 12px;
-        padding: 8px 14px;
+        gap: 16px;
+        padding: 10px 16px;
+        justify-content: center;
+        flex-wrap: wrap;
     }
 
-    /* Cards go horizontal rows — easier to tap on mobile */
+    /* Cards: centered column layout — icon on top, text below */
     .card {
-        width: 100%;
-        height: 72px;
-        flex-direction: row;
-        padding: 0 20px;
-        justify-content: flex-start;
-        gap: 18px;
-        border-radius: 10px;
+        width: 140px;
+        height: 160px;
+        flex-direction: column;
+        padding: 16px 10px;
+        justify-content: center;
+        align-items: center;
+        gap: 12px;
+        border-radius: 12px;
     }
 
     .card::before { display: none; }
@@ -566,12 +569,12 @@ footer {
         transform: none;
     }
     .card:active {
-        transform: scale(0.98);
+        transform: scale(0.97);
         transition: transform 0.1s;
     }
 
     .neon-icon {
-        font-size: 1.8rem;
+        font-size: 2.4rem;
         flex-shrink: 0;
     }
 
@@ -580,30 +583,32 @@ footer {
     }
 
     .card h2 {
-        font-size: 0.85rem;
-        text-align: left;
-        padding: 0;
+        font-size: 0.72rem;
+        text-align: center;
+        padding: 0 6px;
+        line-height: 1.3;
     }
 
     .card p {
-        font-size: 0.7rem;
-        text-align: left;
-        padding: 0;
+        font-size: 0.65rem;
+        text-align: center;
+        padding: 0 6px;
         display: none; /* Hide descriptions on mobile for cleaner look */
     }
 
     /* Show compact question count beside title on mobile */
     .mobile-qcount {
         display: inline;
-        font-size: 0.7rem;
+        font-size: 0.65rem;
         opacity: 0.9;
     }
 
     .neon-text-bottom {
-        font-size: 0.78rem;
+        font-size: 0.72rem;
         margin-top: 28px;
         padding: 0 16px;
         letter-spacing: 0;
+        text-align: center;
     }
 
     footer {
