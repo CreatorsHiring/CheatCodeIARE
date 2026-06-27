@@ -3234,4 +3234,9 @@ if (process.env.VERCEL !== "1") {
     });
 }
 
+//Unknown route handler
+app.use((req, res) => {
+    res.status(404).render("unknown-route");
+});
+
 module.exports = app;
