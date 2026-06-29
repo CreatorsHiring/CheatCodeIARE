@@ -61,7 +61,7 @@ const SAFETY_SETTINGS = [
 // Returns true for errors that warrant trying the next model
 function isRetryableError(err) {
     const msg = (err.message || "").toLowerCase();
-    return (
+return (
         msg.includes("429") ||
         msg.includes("503") ||
         msg.includes("404") ||
@@ -69,7 +69,9 @@ function isRetryableError(err) {
         msg.includes("quota") ||
         msg.includes("rate limit") ||
         msg.includes("overloaded") ||
-        msg.includes("too many requests")
+        msg.includes("too many requests") ||
+        msg.includes("fetch failed") || // <--- Catches low-level socket drops
+        msg.includes("network")
     );
 }
 
