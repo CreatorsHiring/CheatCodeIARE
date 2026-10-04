@@ -251,6 +251,45 @@
             51%, 100% { opacity: 0; }
         }
 
+        /* Temporary Solution Link Button */
+        .temp-solution-container {
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px dashed rgba(255, 234, 0, 0.4);
+            text-align: center;
+        }
+
+        .temp-solution-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            width: 100%;
+            padding: 13px 18px;
+            background: rgba(255, 234, 0, 0.12);
+            border: 2px solid var(--yellow-glow);
+            color: var(--yellow-glow);
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.85rem;
+            font-weight: 800;
+            letter-spacing: 0.8px;
+            text-decoration: none;
+            text-transform: uppercase;
+            border-radius: 4px;
+            box-shadow: 0 0 20px rgba(255, 234, 0, 0.35);
+            text-shadow: 0 0 10px rgba(255, 234, 0, 0.6);
+            transition: all 0.3s ease;
+            box-sizing: border-box;
+        }
+
+        .temp-solution-btn:hover {
+            background: var(--yellow-glow);
+            color: #000;
+            text-shadow: none;
+            box-shadow: 0 0 30px rgba(255, 234, 0, 0.85);
+            transform: translateY(-2px);
+        }
+
         /* Action Buttons Section */
         .action-section {
             display: flex;
@@ -464,6 +503,11 @@
             </div>
             <div class="terminal-line">
                 <span class="terminal-prompt">&gt;</span> ESTIMATED UPTIME: STAND BY FOR UPDATES<span class="blinking-cursor"></span>
+            </div>
+            <div class="temp-solution-container">
+                <a href="https://cheat-code-iare-2.vercel.app/" target="_blank" rel="noopener noreferrer" class="temp-solution-btn">
+                    <i class="fa-solid fa-up-right-from-square"></i> CLICK HERE FOR A TEMPORARY SOLUTION FOR THIS WEBSITE
+                </a>
             </div>
         </div>
 
